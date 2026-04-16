@@ -357,7 +357,7 @@ def api_call(method: str, **params) -> dict:
     
     max_retries = 3
     base_delay = 2
-    
+
     for attempt in range(max_retries):
         try:
             result = subprocess.run([
@@ -365,31 +365,56 @@ def api_call(method: str, **params) -> dict:
                 "-H", f"Key: {API_KEY}",
                 "-H", f"Sign: {signature}",
                 "-d", params_str,
-                "-H", "User-Agent: Mozilla/5.0"
+                "-H", "User-Agent: Mozilla/5.0",
+                "-w", "\n%{http_code}",   # append HTTP status on last line
             ], capture_output=True, text=True, timeout=15)
-            
-            data = json.loads(result.stdout)
-            
-            # Check for rate limit error
+
+            # Split HTTP status code from body
+            parts = result.stdout.rsplit("\n", 1)
+            body = parts[0] if len(parts) == 2 else result.stdout
+            http_status = parts[1].strip() if len(parts) == 2 else "200"
+
+            # HTTP 429 — set global public-REST cooldown and back off
+            if http_status == "429":
+                global _global_rate_limit_until
+                _global_rate_limit_until = time.time() + 60
+                delay = base_delay * (2 ** attempt)
+                log.warning(f"[API] HTTP 429 from Indodax TAPI — global cooldown 60s, retry in {delay}s")
+                time.sleep(delay)
+                nonce = get_nonce()
+                params_str = f"method={method}&nonce={nonce}&{extra}" if extra else f"method={method}&nonce={nonce}"
+                signature = sign_request(params_str)
+                continue
+
+            data = json.loads(body)
+
+            # JSON-level rate limit signal
             error_msg = str(data.get("error", "")).lower()
-            if "too_many_requests" in error_msg or data.get("success") == 0 and "rate" in error_msg:
+            if data.get("success") == 0 and ("too_many_requests" in error_msg or "rate" in error_msg):
                 if attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt)
                     log.warning(f"Rate limited by Indodax, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
                     time.sleep(delay)
-                    # Increment nonce for retry (server may have advanced it)
                     nonce = get_nonce()
-                    if extra:
-                        params_str = f"method={method}&nonce={nonce}&{extra}"
-                    else:
-                        params_str = f"method={method}&nonce={nonce}"
+                    params_str = f"method={method}&nonce={nonce}&{extra}" if extra else f"method={method}&nonce={nonce}"
                     signature = sign_request(params_str)
                     continue
                 else:
                     log.error("Rate limit exceeded after all retries")
                     return data
-            
+
             return data
+        except json.JSONDecodeError as e:
+            # Non-JSON response (e.g. HTML error page) — treat as transient error
+            log.warning(f"[API] Non-JSON response on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                time.sleep(delay)
+                nonce = get_nonce()
+                params_str = f"method={method}&nonce={nonce}&{extra}" if extra else f"method={method}&nonce={nonce}"
+                signature = sign_request(params_str)
+                continue
+            return {"success": 0, "error": "non-json response"}
         except Exception as e:
             log.error(f"API call failed: {e}")
             if attempt < max_retries - 1:
@@ -397,7 +422,7 @@ def api_call(method: str, **params) -> dict:
                 time.sleep(delay)
                 continue
             return {"success": 0, "error": str(e)}
-    
+
     return {"success": 0, "error": "max retries exceeded"}
 
 def fetch_fear_greed() -> Tuple[int, str]:
@@ -487,28 +512,30 @@ def fetch_polymarket_vibes() -> List[Dict]:
         return []
 
 def fetch_price_rest(pair: str) -> Optional[float]:
-    """Fetch price via public REST API (no auth required)."""
+    """Fetch price via public REST API (throttled, no auth required)."""
+    # Prefer WS price if fresh (< 10s)
+    cached = prices.get(pair, {})
+    age = time.time() - cached.get("ts", cached.get("updated", 0))
+    if age < 10 and cached.get("price"):
+        return cached["price"]
+
+    body = _throttled_public_get(f"https://indodax.com/api/ticker/{pair}_idr")
+    if body is None:
+        return None
     try:
-        result = subprocess.run([
-            "curl", "-s", "-A", "Mozilla/5.0",
-            f"https://indodax.com/api/ticker/{pair}_idr"
-        ], capture_output=True, text=True, timeout=10)
-        
-        data = json.loads(result.stdout)
+        data = json.loads(body)
         return float(data["ticker"]["last"])
     except Exception as e:
         log.debug(f"REST price fetch failed for {pair}: {e}")
         return None
 
 def fetch_ticker_full(pair: str) -> Optional[dict]:
-    """Fetch full ticker data including high/low/volume."""
+    """Fetch full ticker data including high/low/volume (throttled)."""
+    body = _throttled_public_get(f"https://indodax.com/api/ticker/{pair}_idr")
+    if body is None:
+        return None
     try:
-        result = subprocess.run([
-            "curl", "-s", "-A", "Mozilla/5.0",
-            f"https://indodax.com/api/ticker/{pair}_idr"
-        ], capture_output=True, text=True, timeout=10)
-        
-        data = json.loads(result.stdout)
+        data = json.loads(body)
         t = data["ticker"]
         return {
             "last": float(t["last"]),
@@ -522,25 +549,99 @@ def fetch_ticker_full(pair: str) -> Optional[dict]:
         log.debug(f"Ticker fetch failed for {pair}: {e}")
         return None
 
+# ============================================================================
+# PUBLIC REST THROTTLE + CANDLE/RSI CACHE
+# ============================================================================
+
+# TTL per candle interval (seconds)
+_CANDLE_TTL: Dict[str, int] = {
+    "1d": 3600, "4h": 1800, "1h": 600, "30m": 300,
+    "15m": 300, "5m": 60, "3m": 60, "1m": 30,
+}
+_candle_cache: Dict[str, Dict] = {}   # {f"{pair}_{interval}": {"candles": list, "ts": float}}
+
+# Multi-RSI result cache (avoid re-fetching 4 candle TFs per pair within same window)
+_MULTI_RSI_TTL = 90   # seconds
+_multi_rsi_cache: Dict[str, Dict] = {}  # {pair: {"rsi": dict, "ts": float}}
+
+# Global throttle — keeps public REST under ~150 req/min
+_PUBLIC_REST_MIN_INTERVAL = 0.4   # seconds between consecutive public calls
+_last_public_rest_call: float = 0.0
+_global_rate_limit_until: float = 0.0   # if set, block all public REST until then
+
+
+def _throttled_public_get(url: str, timeout: int = 10) -> Optional[str]:
+    """
+    Make a throttled public GET via curl.
+    - Enforces min 0.4s interval between calls (~150 req/min ceiling).
+    - Detects HTTP 429 via curl's %{http_code} and sets a 60s global cooldown.
+    - Returns raw response body, or None on 429/error.
+    """
+    global _last_public_rest_call, _global_rate_limit_until
+
+    # Honour global rate-limit cooldown
+    now = time.time()
+    if now < _global_rate_limit_until:
+        wait = _global_rate_limit_until - now
+        log.warning(f"[THROTTLE] Global cooldown active — waiting {wait:.1f}s")
+        time.sleep(wait)
+
+    # Enforce per-call minimum interval
+    elapsed = time.time() - _last_public_rest_call
+    if elapsed < _PUBLIC_REST_MIN_INTERVAL:
+        time.sleep(_PUBLIC_REST_MIN_INTERVAL - elapsed)
+
+    _last_public_rest_call = time.time()
+
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "-A", "Mozilla/5.0", "-w", "\n%{http_code}", url],
+            capture_output=True, text=True, timeout=timeout
+        )
+        # curl -w appends "\nSTATUS_CODE" after the body
+        parts = result.stdout.rsplit("\n", 1)
+        body = parts[0] if len(parts) == 2 else result.stdout
+        status_code = parts[1].strip() if len(parts) == 2 else "200"
+
+        if status_code == "429":
+            _global_rate_limit_until = time.time() + 60
+            log.warning("[THROTTLE] HTTP 429 received — global cooldown 60s")
+            return None
+
+        return body
+    except Exception as e:
+        log.debug(f"[THROTTLE] Request failed for {url}: {e}")
+        return None
+
+
 def fetch_candles(pair: str, interval: str = "1h", limit: int = 100) -> Optional[List[List[float]]]:
     """
-    Fetch OHLCV candles from Indodax public API.
+    Fetch OHLCV candles from Indodax public API with TTL cache.
     interval: 1m, 3m, 5m, 15m, 30m, 1h, 4h, 6h, 12h, 1d, 1w
     Returns list of [timestamp, open, high, low, close, volume] lists.
     """
+    cache_key = f"{pair}_{interval}"
+    ttl = _CANDLE_TTL.get(interval, 300)
+    cached = _candle_cache.get(cache_key)
+    if cached and (time.time() - cached["ts"]) < ttl:
+        return cached["candles"]
+
+    body = _throttled_public_get(
+        f"https://indodax.com/api/klines/{pair}idr?interval={interval}&limit={limit}"
+    )
+    if body is None:
+        return cached["candles"] if cached else None
+
     try:
-        result = subprocess.run([
-            "curl", "-s", "-A", "Mozilla/5.0",
-            f"https://indodax.com/api/klines/{pair}idr?interval={interval}&limit={limit}"
-        ], capture_output=True, text=True, timeout=10)
-        
-        data = json.loads(result.stdout)
+        data = json.loads(body)
         if data.get("success") == 1:
-            return data.get("klines", [])
-        return None
+            candles = data.get("klines", [])
+            _candle_cache[cache_key] = {"candles": candles, "ts": time.time()}
+            return candles
+        return cached["candles"] if cached else None
     except Exception as e:
         log.debug(f"Candles fetch failed for {pair} ({interval}): {e}")
-        return None
+        return cached["candles"] if cached else None
 
 def calc_rsi_from_candles(candles: List[List[float]], period: int = 14) -> Optional[float]:
     """Calculate RSI from candle close prices."""
@@ -572,34 +673,42 @@ def calc_rsi_from_candles(candles: List[List[float]], period: int = 14) -> Optio
 def get_multi_rsi(pair: str, price: float) -> Dict[str, float]:
     """
     Get RSI across multiple timeframes.
-    3m from live prices, others from Indodax candles API.
+    3m from live prices (always fresh), higher TFs from candle cache (90s TTL).
     """
+    # Always update 3m RSI from live price
+    rsi_3m = update_rsi(pair, price, period=3)
+
+    # Return cached result if fresh (TTL 90s), updating only the live 3m RSI
+    cached = _multi_rsi_cache.get(pair)
+    if cached and (time.time() - cached["ts"]) < _MULTI_RSI_TTL:
+        result = dict(cached["rsi"])
+        result["3m"] = rsi_3m
+        return result
+
     result = {
-        "3m": 50.0,
+        "3m": rsi_3m,
         "15m": 50.0,
         "1h": 50.0,
         "4h": 50.0,
         "1d": 50.0,
     }
-    
-    # 3m RSI from live price (period=3)
-    result["3m"] = update_rsi(pair, price, period=3)
-    
-    # Higher timeframes from candles API
+
+    # Higher timeframes from candles API (served from _candle_cache when warm)
     timeframe_map = {
         "15m": ("15m", 14),
         "1h": ("1h", 14),
         "4h": ("4h", 14),
         "1d": ("1d", 14),
     }
-    
+
     for key, (interval, period) in timeframe_map.items():
         candles = fetch_candles(pair, interval=interval, limit=100)
         if candles:
             rsi = calc_rsi_from_candles(candles, period=period)
             if rsi is not None:
                 result[key] = rsi
-    
+
+    _multi_rsi_cache[pair] = {"rsi": dict(result), "ts": time.time()}
     return result
 
 def get_balance(use_cache: bool = True) -> Dict[str, float]:
@@ -1107,12 +1216,19 @@ def check_open_positions(current_price: float, balance: Dict[str, float]) -> Non
             execute_sell(pair, current_price, qty, "Stop Loss")
             continue
         
-        # Check if we should take profit early based on signal
-        multi_rsi = get_multi_rsi(pair, current_price)
-        signal, score, reasons = get_signal(pair, current_price, multi_rsi)
-        if signal in ["STRONG_SELL", "SELL"] and pnl_pct > 0:
-            log.info(f"Signal exit for {pair}: {signal} with +{pnl_pct*100:.1f}%")
-            execute_sell(pair, current_price, qty, f"Signal: {signal}")
+        # Signal exit: only worth checking when we're in profit.
+        # Use cached multi_rsi to avoid triggering fresh candle fetches per position.
+        if pnl_pct > 0:
+            cached_mrsi = _multi_rsi_cache.get(pair, {})
+            if cached_mrsi and (time.time() - cached_mrsi.get("ts", 0)) < _MULTI_RSI_TTL:
+                multi_rsi = dict(cached_mrsi["rsi"])
+                multi_rsi["3m"] = get_rsi(pair)  # keep 3m fresh from WS
+            else:
+                multi_rsi = get_multi_rsi(pair, current_price)
+            signal, score, reasons = get_signal(pair, current_price, multi_rsi)
+            if signal in ["STRONG_SELL", "SELL"]:
+                log.info(f"Signal exit for {pair}: {signal} with +{pnl_pct*100:.1f}%")
+                execute_sell(pair, current_price, qty, f"Signal: {signal}")
 
 def check_for_entries(pair: str, current_price: float, idr_balance: float) -> bool:
     """Check if we should enter a position."""
@@ -1226,12 +1342,17 @@ def print_portfolio_dashboard():
             continue
         holdings[coin] = amount
     
-    # Fetch current prices for all held coins via Indodax ticker API
+    # Prices for held coins — prefer WS cache (prices dict), fall back to REST only
+    # for coins not in the WS feed (Fix #8: removes per-coin REST call in loop)
     coin_values = {}
     total_holdings_value = 0
-    
+
     for coin, amount in holdings.items():
-        price = fetch_price_rest(coin)
+        ws_data = prices.get(coin, {})
+        ws_age = time.time() - ws_data.get("ts", ws_data.get("updated", 0))
+        price = ws_data.get("price") if ws_age < 30 else None
+        if not price:
+            price = fetch_price_rest(coin)
         if price:
             value = amount * price
             coin_values[coin] = {
@@ -1262,9 +1383,11 @@ def print_portfolio_dashboard():
         position_data = []
         for pair, pos in state.positions.items():
             current_price_data = coin_values.get(pair, {})
-            current_price = current_price_data.get("price", fetch_price_rest(pair))
-            if not current_price_data.get("price"):
-                current_price = fetch_price_rest(pair) if not current_price else current_price
+            current_price = current_price_data.get("price")
+            if not current_price:
+                # Try WS cache before hitting REST
+                ws_data = prices.get(pair, {})
+                current_price = ws_data.get("price") or fetch_price_rest(pair)
             entry = pos["entry_price"]
             qty = pos.get("qty", 0)
             current_value = qty * current_price if current_price else 0
@@ -1301,12 +1424,16 @@ def print_portfolio_dashboard():
         gainers = []
         for coin, data in coin_values.items():
             if data["price"] > 0:
-                # Use daily position as proxy for 24h change (high - low range)
-                ticker = fetch_ticker_full(coin)
-                if ticker:
-                    daily_change = ((data["price"] - ticker["low"]) / ticker["low"] * 100) if ticker["low"] > 0 else 0
-                else:
-                    daily_change = 0
+                # Use _ticker_cache or WS high/low to avoid per-coin REST call (Fix #8)
+                ticker_data = _ticker_cache.get(coin, {})
+                ticker_age = time.time() - ticker_data.get("ts", 0) if ticker_data else 999
+                ws_data = prices.get(coin, {})
+                low = None
+                if ticker_age < 300:
+                    low = ticker_data.get("low")
+                if not low and ws_data.get("low"):
+                    low = ws_data["low"]
+                daily_change = ((data["price"] - low) / low * 100) if low and low > 0 else 0
                 gainers.append({
                     "coin": coin,
                     "price": data["price"],
@@ -1540,7 +1667,9 @@ def rank_all_pairs() -> List[Tuple[str, int, str, float]]:
     """
     Score and rank ALL tracked pairs for trading priority.
     Returns list of (pair, score, signal, daily_pos) sorted by score descending.
-    Used by daemon to auto-select ACTIVE_PAIRS.
+
+    Uses cached multi_rsi (no fresh candle fetches) to avoid rate-limit bursts.
+    Only falls back to a fresh get_multi_rsi() if no cache exists for a pair.
     """
     rankings = []
     for pair in ALL_TRACKED:
@@ -1549,39 +1678,48 @@ def rank_all_pairs() -> List[Tuple[str, int, str, float]]:
         price = prices[pair]["price"]
         if not price or price <= 0:
             continue
-        
-        # Get indicators
-        multi_rsi = get_multi_rsi(pair, price)
+
+        # Prefer cached multi_rsi — avoids 4 REST calls per pair during ranking
+        cached_mrsi = _multi_rsi_cache.get(pair, {})
+        if cached_mrsi and (time.time() - cached_mrsi.get("ts", 0)) < _MULTI_RSI_TTL:
+            multi_rsi = dict(cached_mrsi["rsi"])
+            multi_rsi["3m"] = get_rsi(pair)  # RSI(3m) always live from WS
+        else:
+            # Cache cold for this pair — fetch once (candle cache will serve subsequent calls)
+            multi_rsi = get_multi_rsi(pair, price)
+
         daily_pos = get_daily_position(pair, price)
         signal, score, reasons = get_signal(pair, price, multi_rsi)
-        
+
         rankings.append((pair, score, signal, daily_pos))
-    
-    # Sort by score descending
+
     rankings.sort(key=lambda x: x[1], reverse=True)
     return rankings
 
-def update_active_pairs() -> List[str]:
+def update_active_pairs() -> Tuple[List[str], List[Tuple[str, int, str, float]]]:
     """
     Auto-adjust active_pairs based on current signal scores + market regime.
     Keep pairs with open positions. Promote top-scoring pairs.
     Adjust max active based on regime.
+
+    Returns (new_active_list, rankings) so callers can reuse rankings without
+    triggering a second rank_all_pairs() call.
     """
     # Always keep pairs with open positions
     locked = set(state.positions.keys())
-    
+
     # Get regime config
     regime_cfg = get_regime_trading_config()
     effective_max = int(MAX_ACTIVE_PAIRS * regime_cfg["max_active_multiplier"])
     effective_max = max(effective_max, MIN_ACTIVE_PAIRS)
-    
-    # Get rankings
+
+    # Get rankings once — reused below and returned to caller
     rankings = rank_all_pairs()
-    
+
     # Build new active list: locked + top scoring
     new_active = list(locked)
     slots = effective_max - len(locked)
-    
+
     if slots > 0:
         for pair, score, signal, daily_pos in rankings:
             if pair in locked:
@@ -1593,7 +1731,7 @@ def update_active_pairs() -> List[str]:
                 slots -= 1
                 if slots <= 0:
                     break
-    
+
     # Ensure minimum
     if len(new_active) < MIN_ACTIVE_PAIRS:
         for pair, score, signal, daily_pos in rankings:
@@ -1601,12 +1739,11 @@ def update_active_pairs() -> List[str]:
                 new_active.append(pair)
                 if len(new_active) >= MIN_ACTIVE_PAIRS:
                     break
-    
+
     # Sort: locked first, then by rank
     locked_list = [p for p in new_active if p in locked]
     unlocked_list = [p for p in new_active if p not in locked]
-    
-    # Re-sort unlocked by score
+
     unlocked_sorted = []
     for pair in unlocked_list:
         for r_pair, score, signal, daily_pos in rankings:
@@ -1615,13 +1752,13 @@ def update_active_pairs() -> List[str]:
                 break
     unlocked_sorted.sort(key=lambda x: x[1], reverse=True)
     new_active = locked_list + [p for p, _ in unlocked_sorted]
-    
+
     changed = set(new_active) != set(state.active_pairs)
     if changed:
         regime, _ = get_market_regime()
         log.info(f"[PAIR-ADJUST] Active pairs: {len(new_active)} ({regime} mode) — {', '.join(new_active)}")
-    
-    return new_active
+
+    return new_active, rankings
 
 async def daemon_pair_reassess():
     """
@@ -1635,14 +1772,13 @@ async def daemon_pair_reassess():
         try:
             # Prices are already updated via WebSocket in ws_client
             # No need to call fetch_all_prices() — that causes unnecessary REST API calls
-            
-            # Update active pairs based on current signals
-            new_active = update_active_pairs()
+
+            # update_active_pairs() returns rankings too — reuse to avoid a second
+            # rank_all_pairs() call (Fix #3: eliminates double-ranking burst)
+            new_active, rankings = update_active_pairs()
             state.active_pairs = new_active
             state.save()
-            
-            # Log ranking summary
-            rankings = rank_all_pairs()
+
             log.info(f"[PAIR-RANK] Top 5: " + " | ".join(
                 f"{p}:{s}({sig})" for p, s, sig, _ in rankings[:5]
             ))
@@ -1828,9 +1964,15 @@ async def daemon_morning_brief():
         for pair in WS_PAIRS:
             if pair in prices:
                 p = prices[pair]
-                multi_rsi = get_multi_rsi(pair, p["price"])
+                # Use cached multi_rsi to avoid 30-pair × 4-candle burst (Fix #7)
+                cached_mrsi = _multi_rsi_cache.get(pair, {})
+                if cached_mrsi and (time.time() - cached_mrsi.get("ts", 0)) < _MULTI_RSI_TTL:
+                    multi_rsi = dict(cached_mrsi["rsi"])
+                    multi_rsi["3m"] = get_rsi(pair)
+                else:
+                    multi_rsi = get_multi_rsi(pair, p["price"])
                 signal, score, reasons = get_signal(pair, p["price"], multi_rsi)
-                emoji = {"STRONG_BUY": "🟢", "BUY": "🟢", "HOLD": "🟡", 
+                emoji = {"STRONG_BUY": "🟢", "BUY": "🟢", "HOLD": "🟡",
                         "SELL": "🔴", "STRONG_SELL": "🔴"}.get(signal, "⚪")
                 log.info(f"  {pair.upper():6} Rp {p['price']:>15,.0f}  {emoji} {signal}")
         
@@ -1854,7 +1996,7 @@ async def run_daemon():
     
     # Initial pair assessment
     if not state.active_pairs:
-        state.active_pairs = update_active_pairs()
+        state.active_pairs, _ = update_active_pairs()
         state.save()
     log.info(f"Active pairs: {', '.join(state.active_pairs)}")
     
