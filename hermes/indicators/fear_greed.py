@@ -3,23 +3,27 @@ import requests
 from typing import Tuple, List, Dict
 from hermes.logging_setup import log
 from hermes.state import state
-from hermes.api.rest import _throttled_public_get
 
 def fetch_fear_greed() -> Tuple[int, str]:
-    """Fetch Fear & Greed index from alternative.me via throttled public GET."""
-    body = _throttled_public_get("https://api.alternative.me/fng/?limit=1")
-    if body is None:
-        log.warning("F&G fetch failed: rate limited or error, using cached value")
-        return state.fg_value, state.fg_class
+    """Fetch Fear & Greed index from alternative.me.
+    Uses requests directly — NOT the Indodax throttle, since this is a different API."""
     try:
-        data = json.loads(body)
+        resp = requests.get(
+            "https://api.alternative.me/fng/?limit=1",
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        if resp.status_code != 200:
+            log.warning(f"F&G fetch failed: HTTP {resp.status_code}, using cached value")
+            return state.fg_value, state.fg_class
+        data = resp.json()
         fg_value = int(data["data"][0]["value"])
         fg_class = data["data"][0]["value_classification"]
         state.fg_value = fg_value
         state.fg_class = fg_class
         return fg_value, fg_class
     except Exception as e:
-        log.warning(f"F&G parse failed: {e}, using cached value")
+        log.warning(f"F&G fetch failed: {e}, using cached value")
         return state.fg_value, state.fg_class
 
 def fetch_polymarket_vibes() -> List[Dict]:

@@ -3,7 +3,7 @@ from typing import Optional, List, Dict
 from hermes.state import state, _multi_rsi_cache
 from hermes.api.rest import fetch_candles
 
-_MULTI_RSI_TTL = 90
+_MULTI_RSI_TTL = 300  # 5 minutes — reduced refetch frequency
 
 def calc_rsi_from_candles(candles: List[List[float]], period: int = 14) -> Optional[float]:
     """Calculate RSI from candle close prices."""
@@ -86,11 +86,11 @@ def get_rsi(pair: str) -> float:
     return 100 - (100 / (1 + rs))
 
 def get_multi_rsi(pair: str, price: float) -> Dict[str, float]:
-    """Get RSI across multiple timeframes."""
-    # Always update 3m RSI from live price
+    """Get RSI across multiple timeframes. Only fetches 1h and 4h to save REST budget."""
+    # Always update 3m RSI from live price (no REST needed)
     rsi_3m = update_rsi(pair, price, period=3)
 
-    # Return cached result if fresh (TTL 90s)
+    # Return cached result if fresh
     cached = _multi_rsi_cache.get(pair)
     if cached and (time.time() - cached["ts"]) < _MULTI_RSI_TTL:
         result = dict(cached["rsi"])
@@ -99,17 +99,14 @@ def get_multi_rsi(pair: str, price: float) -> Dict[str, float]:
 
     result = {
         "3m": rsi_3m,
-        "15m": 50.0,
         "1h": 50.0,
         "4h": 50.0,
-        "1d": 50.0,
     }
 
+    # Only fetch 2 timeframes instead of 4 — cuts REST calls in half
     timeframe_map = {
-        "15m": ("15m", 14),
         "1h": ("1h", 14),
         "4h": ("4h", 14),
-        "1d": ("1d", 14),
     }
 
     for key, (interval, period) in timeframe_map.items():

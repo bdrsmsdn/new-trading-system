@@ -17,36 +17,48 @@ from hermes.indicators.fear_greed import fetch_fear_greed
 from hermes.trading.positions import check_open_positions
 from hermes.trading.execution import execute_buy
 
-# Caching the ranking globally so trade check can reuse it
-_latest_rankings = []
-_LATEST_MULTI_RSI_TTL = 90
+# ── Configuration ──
+_MULTI_RSI_TTL = 300  # Match rsi.py TTL
+_RANK_BATCH_SIZE = 10  # Only refresh RSI for top N pairs per rank cycle
+_RANK_STAGGER_SLEEP = 2.0  # Seconds between pairs during ranking
 
 def rank_all_pairs() -> List[Tuple[str, int, str, float]]:
-    """Score and rank ALL tracked pairs for trading priority."""
+    """Score and rank ALL tracked pairs for trading priority.
+    Only refreshes multi-RSI for a limited batch to stay within REST budget."""
+    from hermes.api.rest import _check_budget
+
     rankings = []
-    # Fetch ticker high/low using WS data or fetch_ticker_full indirectly
-    # We want to minimize burst calls so we use the cache mechanism
+    fresh_rsi_count = 0
+
     for pair in ALL_TRACKED:
         if pair not in prices:
             continue
-        price = prices[pair]["price"]
+        price_data = prices[pair]
+        price = price_data.get("price", 0)
         if not price or price <= 0:
             continue
 
+        # Always try cached multi-RSI first
         cached_mrsi = _multi_rsi_cache.get(pair, {})
-        if cached_mrsi and (time.time() - cached_mrsi.get("ts", 0)) < _LATEST_MULTI_RSI_TTL:
+        if cached_mrsi and (time.time() - cached_mrsi.get("ts", 0)) < _MULTI_RSI_TTL:
             multi_rsi = dict(cached_mrsi["rsi"])
             multi_rsi["3m"] = get_rsi(pair)
-        else:
+        elif fresh_rsi_count < _RANK_BATCH_SIZE and _check_budget():
+            # Only fetch fresh RSI for limited pairs, and only if budget allows
             multi_rsi = get_multi_rsi(pair, price)
-            time.sleep(0.1) # small yield during initialization bursts
+            fresh_rsi_count += 1
+            time.sleep(_RANK_STAGGER_SLEEP)  # Heavy stagger between REST calls
+        else:
+            # No cache, no budget — use 3m RSI only (from WS price updates)
+            multi_rsi = {"3m": get_rsi(pair), "1h": 50.0, "4h": 50.0}
 
-        daily_pos = get_daily_position(pair, price)
+        daily_pos = get_daily_position(pair, price)  # Now WS-only, no REST
         signal, score, reasons = get_signal(pair, price, multi_rsi)
 
         rankings.append((pair, score, signal, daily_pos))
 
     rankings.sort(key=lambda x: x[1], reverse=True)
+    log.info(f"[RANK] Ranked {len(rankings)} pairs (fresh RSI for {fresh_rsi_count})")
     return rankings
 
 def update_active_pairs() -> Tuple[List[str], List[Tuple[str, int, str, float]]]:
@@ -58,8 +70,6 @@ def update_active_pairs() -> Tuple[List[str], List[Tuple[str, int, str, float]]]
     effective_max = max(effective_max, MIN_ACTIVE_PAIRS)
     
     rankings = rank_all_pairs()
-    global _latest_rankings
-    _latest_rankings = rankings
 
     new_active = list(locked)
     slots = effective_max - len(locked)
@@ -117,7 +127,7 @@ async def daemon_pair_reassess():
             log.error(f"[PAIR-REASSESS] Error: {e}")
 
 async def daemon_trade_check(get_balance_func):
-    """Periodically check for trade opportunities."""
+    """Periodically check for trade opportunities. Uses cached/WS data primarily."""
     while True:
         await asyncio.sleep(DAEMON_TRADE_CHECK_INTERVAL)
         try:
@@ -127,10 +137,12 @@ async def daemon_trade_check(get_balance_func):
             if idr < MIN_TRADE_RP and not state.positions:
                 continue
             
+            # Check positions using WS prices (no REST)
             for pair in list(state.positions.keys()):
                 if pair in prices:
                     check_open_positions(prices[pair]["price"], balance)
             
+            # Only look for entries when F&G is favorable
             if state.fg_value <= FG_BUY_THRESHOLD:
                 for pair in state.active_pairs:
                     if pair not in prices:
@@ -138,19 +150,19 @@ async def daemon_trade_check(get_balance_func):
                     if pair in state.positions:
                         continue
                     
-                    # We look up trade cooldown in sync logic
                     from hermes.config import TRADE_COOLDOWN
                     if state.last_trade_time.get(pair, 0) > time.time() - TRADE_COOLDOWN:
                         continue
                     
                     price = prices[pair]["price"]
-                    # Fetching signal here - but with cached multi_rsi ideally
+                    # Use cached multi-RSI — no fresh REST calls
                     cached_mrsi = _multi_rsi_cache.get(pair, {})
-                    if cached_mrsi and (time.time() - cached_mrsi.get("ts", 0)) < _LATEST_MULTI_RSI_TTL:
+                    if cached_mrsi and (time.time() - cached_mrsi.get("ts", 0)) < _MULTI_RSI_TTL:
                         multi_rsi = dict(cached_mrsi["rsi"])
                         multi_rsi["3m"] = get_rsi(pair)
                     else:
-                        multi_rsi = get_multi_rsi(pair, price)
+                        # If no cache, use WS-derived RSI only (don't fetch candles)
+                        multi_rsi = {"3m": get_rsi(pair), "1h": 50.0, "4h": 50.0}
                     
                     signal, score, reasons = get_signal(pair, price, multi_rsi)
                     
@@ -169,7 +181,6 @@ async def daemon_fg_fetch():
     """Periodically fetch Fear & Greed."""
     while True:
         await asyncio.sleep(DAEMON_FG_FETCH_INTERVAL)
-        from hermes.indicators.fear_greed import fetch_fear_greed
         fetch_fear_greed()
 
 async def daemon_morning_brief(get_balance_func):
@@ -189,7 +200,6 @@ async def daemon_morning_brief(get_balance_func):
         log.info(f"HERMES MORNING BRIEF — {datetime.now().strftime('%d %b %Y, %H:%M WIB')}")
         log.info("=" * 60)
         
-        from hermes.indicators.fear_greed import fetch_fear_greed
         fetch_fear_greed()
         regime, _ = get_market_regime()
         
@@ -207,7 +217,7 @@ async def run_daemon(get_balance_func):
     log.info(f"Max active pairs: {MAX_ACTIVE_PAIRS} | Reassess every: {ANALYSIS_REASSESS_INTERVAL}s")
     log.info(f"Max trade: Rp {MAX_TRADE_RP:,} | Stop Loss: {STOP_LOSS_PCT*100:.0f}% | Take Profit: {TAKE_PROFIT_PCT*100:.0f}%")
     
-    # Run fetch synchronously at start
+    # Fetch F&G first (uses requests directly, not Indodax API)
     fetch_fear_greed()
     log.info(f"Fear & Greed: {state.fg_value} ({state.fg_class})")
     
@@ -230,13 +240,3 @@ async def run_daemon(get_balance_func):
         daemon_pair_reassess(),
         daemon_morning_brief(get_balance_func)
     )
-
-def daemon_rebalance_loop(get_balance_func):
-    """Async wrapper for run_rebalance"""
-    from hermes.trading.rebalancer import run_rebalance
-    from hermes.config import DAEMON_REBALANCE_INTERVAL
-    async def wrapper():
-        while True:
-            await asyncio.sleep(DAEMON_REBALANCE_INTERVAL)
-            run_rebalance(get_balance_func)
-    return wrapper()

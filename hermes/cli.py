@@ -3,7 +3,7 @@ import json
 import sys
 import asyncio
 from hermes.api.balance import get_balance
-from hermes.api.rest import fetch_price_rest
+from hermes.api.rest import fetch_price_rest, get_rest_budget_status
 from hermes.indicators.fear_greed import fetch_fear_greed
 from hermes.indicators.signals import get_signal, get_market_regime
 from hermes.indicators.rsi import get_multi_rsi
@@ -12,7 +12,7 @@ from hermes.display.dashboard import print_portfolio_dashboard
 from hermes.trading.positions import check_open_positions
 from hermes.trading.execution import execute_buy, execute_sell
 from hermes.daemon.tasks import rank_all_pairs, run_daemon
-from hermes.state import state
+from hermes.state import state, prices
 
 def to_json(data):
     print(json.dumps(data, indent=2))
@@ -51,6 +51,7 @@ def main():
     sub.add_parser("state", help="Show current state")
     sub.add_parser("daemon", help="Run autonomous daemon")
     sub.add_parser("one-shot", help="Run single trading iteration")
+    sub.add_parser("budget", help="Show REST API budget status")
     
     args = parser.parse_args()
     
@@ -81,9 +82,12 @@ def main():
             to_json({"error": "Specify --pair X or --all"})
             
     elif args.command == "check-positions":
+        # Use WS prices, not REST
         balance = get_balance(use_cache=True)
         for pair in list(state.positions.keys()):
-            current_price = fetch_price_rest(pair)
+            current_price = prices.get(pair, {}).get("price")
+            if not current_price:
+                current_price = fetch_price_rest(pair)
             if current_price:
                 check_open_positions(current_price, balance)
         to_json({"status": "checked"})
@@ -118,12 +122,13 @@ def main():
         to_json(dash)
         
     elif args.command == "rank-pairs":
-        # First ensure we have prices
+        # Use WS-based init, not REST burst
         from hermes.api.rest import fetch_all_prices
         fetch_all_prices()
         rankings = rank_all_pairs()
         result = [{"pair": p, "score": s, "signal": sig, "daily_pos": dp} for p, s, sig, dp in rankings]
-        to_json({"rankings": result})
+        budget = get_rest_budget_status()
+        to_json({"rankings": result, "rest_budget": budget})
         
     elif args.command == "market-regime":
         regime, desc = get_market_regime()
@@ -136,10 +141,12 @@ def main():
             "fg_value": state.fg_value,
             "fg_class": state.fg_class
         })
+    
+    elif args.command == "budget":
+        to_json(get_rest_budget_status())
         
     elif args.command == "daemon":
-        from hermes.config import check_pid_file, PID_FILE # need to add this
-        # Provide a quick inline check for daemon
+        from hermes.config import PID_FILE
         if PID_FILE.exists():
             import os
             try:
@@ -166,21 +173,28 @@ def main():
         balance = get_balance(use_cache=False)
         idr = balance.get("idr", 0)
         
+        # WS-based price init
         fetch_all_prices()
         
+        # Check positions using WS prices
         for pair in list(state.positions.keys()):
-            current_price = fetch_price_rest(pair)
+            current_price = prices.get(pair, {}).get("price")
+            if not current_price:
+                current_price = fetch_price_rest(pair)
             if current_price:
                 check_open_positions(current_price, balance)
         
         if fg_val <= FG_BUY_THRESHOLD:
             for pair in state.active_pairs:
-                current_price = fetch_price_rest(pair)
+                current_price = prices.get(pair, {}).get("price")
+                if not current_price:
+                    current_price = fetch_price_rest(pair)
                 if current_price:
                     if check_for_entries(pair, current_price, idr):
                         idr -= MAX_TRADE_RP
         state.save()
-        to_json({"status": "one-shot completed"})
+        budget = get_rest_budget_status()
+        to_json({"status": "one-shot completed", "rest_budget": budget})
 
 if __name__ == "__main__":
     main()

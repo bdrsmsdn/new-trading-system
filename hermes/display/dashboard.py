@@ -2,10 +2,10 @@ import time
 from typing import Dict
 from hermes.logging_setup import log
 from hermes.state import state, prices, _ticker_cache
-from hermes.api.rest import fetch_price_rest
 
 def print_portfolio_dashboard(get_balance_func) -> Dict:
-    """Display comprehensive portfolio dashboard and return data."""
+    """Display comprehensive portfolio dashboard and return data.
+    Uses WS prices ONLY — no REST fallback to avoid 429."""
     log.info("\n" + "=" * 60)
     log.info("📊 PORTFOLIO DASHBOARD")
     log.info("=" * 60)
@@ -24,11 +24,8 @@ def print_portfolio_dashboard(get_balance_func) -> Dict:
 
     for coin, amount in holdings.items():
         ws_data = prices.get(coin, {})
-        ws_age = time.time() - ws_data.get("ts", ws_data.get("updated", 0))
-        price = ws_data.get("price") if ws_age < 30 else None
-        if not price:
-            price = fetch_price_rest(coin)
-        if price:
+        price = ws_data.get("price")
+        if price and price > 0:
             value = amount * price
             coin_values[coin] = {
                 "amount": amount,
@@ -38,6 +35,7 @@ def print_portfolio_dashboard(get_balance_func) -> Dict:
             }
             total_holdings_value += value
         else:
+            # No WS price available — show as unavailable, do NOT call REST
             coin_values[coin] = {
                 "amount": amount,
                 "price": 0,
@@ -59,7 +57,7 @@ def print_portfolio_dashboard(get_balance_func) -> Dict:
             current_price = current_price_data.get("price")
             if not current_price:
                 ws_data = prices.get(pair, {})
-                current_price = ws_data.get("price") or fetch_price_rest(pair)
+                current_price = ws_data.get("price", 0)
             entry = pos["entry_price"]
             qty = pos.get("qty", 0)
             current_value = qty * current_price if current_price else 0
@@ -94,14 +92,11 @@ def print_portfolio_dashboard(get_balance_func) -> Dict:
         log.info("\n🏆 TOP GAINERS (24h - from price data):")
         for coin, data in coin_values.items():
             if data["price"] > 0:
-                ticker_data = _ticker_cache.get(coin, {})
-                ticker_age = time.time() - ticker_data.get("ts", 0) if ticker_data else 999
                 ws_data = prices.get(coin, {})
-                low = None
-                if ticker_age < 300:
-                    low = ticker_data.get("low")
-                if not low and ws_data.get("low"):
-                    low = ws_data["low"]
+                low = ws_data.get("low")
+                if not low:
+                    ticker_data = _ticker_cache.get(coin, {})
+                    low = ticker_data.get("low") if ticker_data else None
                 daily_change = ((data["price"] - low) / low * 100) if low and low > 0 else 0
                 gainers.append({
                     "coin": coin,

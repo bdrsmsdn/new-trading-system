@@ -7,10 +7,11 @@ from hermes.indicators.signals import get_signal
 from hermes.trading.execution import execute_sell, execute_buy
 from hermes.config import STOP_LOSS_PCT, TAKE_PROFIT_PCT, TRAILING_ACTIVATION_PCT, TRAILING_STOP_PCT, TRADE_COOLDOWN, MIN_TRADE_RP
 
-_MULTI_RSI_TTL = 90
+_MULTI_RSI_TTL = 300  # Match rsi.py TTL
 
 def check_open_positions(current_price: float, balance: Dict[str, float]) -> None:
-    """Check and manage open positions (TP/SL/Trailing Stop)."""
+    """Check and manage open positions (TP/SL/Trailing Stop).
+    Uses cached RSI only — no REST calls for position checks."""
     for pair, pos in list(state.positions.items()):
         entry = pos["entry_price"]
         qty = pos.get("qty", 0)
@@ -41,20 +42,22 @@ def check_open_positions(current_price: float, balance: Dict[str, float]) -> Non
             execute_sell(pair, current_price, qty, "Stop Loss")
             continue
         
+        # Signal-based exit — use cached RSI only, no REST calls
         if pnl_pct > 0:
             cached_mrsi = _multi_rsi_cache.get(pair, {})
             if cached_mrsi and (time.time() - cached_mrsi.get("ts", 0)) < _MULTI_RSI_TTL:
                 multi_rsi = dict(cached_mrsi["rsi"])
                 multi_rsi["3m"] = get_rsi(pair)
             else:
-                multi_rsi = get_multi_rsi(pair, current_price)
+                # No cache — use WS-derived RSI only (NO REST)
+                multi_rsi = {"3m": get_rsi(pair), "1h": 50.0, "4h": 50.0}
             signal, score, reasons = get_signal(pair, current_price, multi_rsi)
             if signal in ["STRONG_SELL", "SELL"]:
                 log.info(f"Signal exit for {pair}: {signal} with +{pnl_pct*100:.1f}%")
                 execute_sell(pair, current_price, qty, f"Signal: {signal}")
 
 def check_for_entries(pair: str, current_price: float, idr_balance: float) -> bool:
-    """Check if we should enter a position."""
+    """Check if we should enter a position. Budget-aware."""
     last_trade = state.last_trade_time.get(pair, 0)
     if time.time() - last_trade < TRADE_COOLDOWN:
         return False
@@ -62,7 +65,17 @@ def check_for_entries(pair: str, current_price: float, idr_balance: float) -> bo
     if pair in state.positions:
         return False
     
-    multi_rsi = get_multi_rsi(pair, current_price)
+    # Use cached RSI if available, only fetch if budget allows
+    from hermes.api.rest import _check_budget
+    cached_mrsi = _multi_rsi_cache.get(pair, {})
+    if cached_mrsi and (time.time() - cached_mrsi.get("ts", 0)) < _MULTI_RSI_TTL:
+        multi_rsi = dict(cached_mrsi["rsi"])
+        multi_rsi["3m"] = get_rsi(pair)
+    elif _check_budget():
+        multi_rsi = get_multi_rsi(pair, current_price)
+    else:
+        multi_rsi = {"3m": get_rsi(pair), "1h": 50.0, "4h": 50.0}
+
     signal, score, reasons = get_signal(pair, current_price, multi_rsi)
     
     log.info(f"{pair.upper()}: {signal} (score={score}) - {', '.join(reasons)}")

@@ -5,39 +5,46 @@ from typing import Dict, List
 from hermes.logging_setup import log
 from hermes.state import state, prices, _ticker_cache
 from hermes.config import PRICE_CACHE, ALL_TRACKED
-from hermes.api.rest import fetch_price_rest, fetch_ticker_full, update_price
+from hermes.api.rest import fetch_price_rest, fetch_ticker_full, update_price, _check_budget
 from hermes.indicators.rsi import get_rsi, get_multi_rsi
 from hermes.indicators.signals import get_daily_position, get_signal, get_market_regime
 from hermes.indicators.fear_greed import fetch_fear_greed, fetch_polymarket_vibes
 from hermes.display.dashboard import print_portfolio_dashboard
 
 def analyze_pair(pair: str, force_refresh: bool = False) -> Dict:
-    """Analyze a single pair."""
+    """Analyze a single pair. Budget-aware — skips REST if budget exhausted."""
     cached = prices.get(pair, {})
     price = None
     if not force_refresh:
-        age = time.time() - cached.get("ts", 0) if cached else 999
-        if age < 60 and cached.get("price"):
+        age = time.time() - cached.get("ts", cached.get("updated", 0))
+        if age < 120 and cached.get("price"):
             price = cached["price"]
 
     if not price:
-        price = fetch_price_rest(pair)
+        price = fetch_price_rest(pair)  # Has internal WS-first + budget guard
         if not price:
             return {}
         update_price(pair, price)
 
     rsi = get_rsi(pair)
-    daily_pos = get_daily_position(pair, price)
-    multi_rsi = get_multi_rsi(pair, price)
+    daily_pos = get_daily_position(pair, price)  # WS-only now, no REST
+
+    # Only fetch multi-RSI if budget allows
+    if _check_budget():
+        multi_rsi = get_multi_rsi(pair, price)
+    else:
+        multi_rsi = {"3m": rsi, "1h": 50.0, "4h": 50.0}
+
     signal, score, reasons = get_signal(pair, price, multi_rsi)
 
-    ticker_data = _ticker_cache.get(pair, {})
-    ticker_age = time.time() - ticker_data.get("ts", 0) if ticker_data else 999
-    if ticker_age > 300 or force_refresh:
-        ticker = fetch_ticker_full(pair)
-        if ticker:
-            _ticker_cache[pair] = {"high": ticker["high"], "low": ticker["low"], "ts": time.time()}
-            ticker_data = _ticker_cache[pair]
+    # Use WS high/low or ticker cache — fetch_ticker_full already does this
+    ws_data = prices.get(pair, {})
+    high_24h = ws_data.get("high")
+    low_24h = ws_data.get("low")
+    if not high_24h:
+        tc = _ticker_cache.get(pair, {})
+        high_24h = tc.get("high")
+        low_24h = tc.get("low")
 
     return {
         "pair": pair,
@@ -48,12 +55,12 @@ def analyze_pair(pair: str, force_refresh: bool = False) -> Dict:
         "signal": signal,
         "score": score,
         "reasons": reasons,
-        "high_24h": ticker_data.get("high") if ticker_data else None,
-        "low_24h": ticker_data.get("low") if ticker_data else None,
+        "high_24h": high_24h,
+        "low_24h": low_24h,
     }
 
 def print_analysis(get_balance_func, pair=None) -> List[Dict]:
-    """Print market analysis with portfolio dashboard."""
+    """Print market analysis with portfolio dashboard. Budget-aware."""
     try:
         if PRICE_CACHE.exists():
             cached = json.loads(PRICE_CACHE.read_text())
@@ -66,23 +73,17 @@ def print_analysis(get_balance_func, pair=None) -> List[Dict]:
     except Exception:
         pass
 
-    target_pairs = [pair] if pair else list(prices.keys())[:8]
-    for p in target_pairs:
-        ticker = fetch_ticker_full(p)
-        if ticker:
-            _ticker_cache[p] = {"high": ticker["high"], "low": ticker["low"], "ts": time.time()}
-        time.sleep(0.3)
+    # NO separate ticker pre-fetch loop — analyze_pair handles it via WS/cache
 
     log.info("=" * 60)
     log.info(f"Hermes Trader Analysis — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} WIB")
     log.info("=" * 60)
     
-    fg_val, fg_class = fetch_fear_greed()
+    fg_val, fg_class = fetch_fear_greed()  # Uses requests directly, not Indodax
     regime, regime_desc = get_market_regime()
     regime_emoji = {"BULL": "🐂", "BEAR": "🐻", "SIDEWAYS": "↔️"}.get(regime, "?")
     log.info(f"Fear & Greed: {fg_val} ({fg_class}) {regime_emoji} {regime}")
     
-    # We only fetch vibes if we do all
     if not pair:
         vibes = fetch_polymarket_vibes()
         if vibes:
@@ -96,6 +97,10 @@ def print_analysis(get_balance_func, pair=None) -> List[Dict]:
     
     balance = get_balance_func(use_cache=False)
     log.info(f"IDR Balance: Rp {balance.get('idr', 0):,.0f}")
+    
+    from hermes.api.rest import get_rest_budget_status
+    budget = get_rest_budget_status()
+    log.info(f"REST Budget: {budget['remaining']}/{budget['max']} remaining")
     
     log.info("\n📊 Pair Analysis:")
     log.info("-" * 60)
@@ -111,14 +116,7 @@ def print_analysis(get_balance_func, pair=None) -> List[Dict]:
                 priority_pairs.append(p)
     
     for p in priority_pairs:
-        cached = prices.get(p, {})
-        age = time.time() - cached.get("ts", 0) if cached else 999
-        if age < 60 and cached.get("price"):
-            analysis = analyze_pair(p)
-        else:
-            analysis = analyze_pair(p)
-            if not analysis:
-                time.sleep(0.5)
+        analysis = analyze_pair(p)
         if analysis:
             all_analyses.append(analysis)
     
@@ -158,6 +156,8 @@ def print_analysis(get_balance_func, pair=None) -> List[Dict]:
     
     if not pair:
         print_portfolio_dashboard(get_balance_func)
-    
+
+    budget = get_rest_budget_status()
+    log.info(f"\n📡 REST Budget after analysis: {budget['remaining']}/{budget['max']} remaining")    
     log.info("\n" + "=" * 60)
     return all_analyses

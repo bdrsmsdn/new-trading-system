@@ -2,14 +2,13 @@ import time
 from typing import Dict
 from hermes.logging_setup import log
 from hermes.state import state, prices
-from hermes.api.rest import fetch_price_rest, update_price
 from hermes.trading.execution import execute_sell
 from hermes.indicators.signals import get_market_regime
 from hermes.config import REBALANCE_DRIFT_THRESHOLD
 
 def get_portfolio_allocation(get_balance_func) -> Dict[str, float]:
-    """Calculate current portfolio allocation percentages."""
-    balance = get_balance_func(use_cache=False)
+    """Calculate current portfolio allocation percentages. WS prices only."""
+    balance = get_balance_func(use_cache=True)
     idr = balance.get("idr", 0)
     
     total = idr
@@ -17,12 +16,6 @@ def get_portfolio_allocation(get_balance_func) -> Dict[str, float]:
     for coin, amount in balance.items():
         if coin == "idr" or amount <= 0:
             continue
-        if coin not in prices:
-            p = fetch_price_rest(coin)
-            if not p:
-                continue
-            update_price(coin, p, "rest")
-        
         price = prices.get(coin, {}).get("price", 0)
         if price and price > 0:
             val = amount * price
@@ -35,7 +28,8 @@ def get_portfolio_allocation(get_balance_func) -> Dict[str, float]:
     return {coin: val / total for coin, val in holdings.items()}
 
 def run_rebalance(get_balance_func):
-    """Run a single iteration of portfolio allocation drift check and rebalance."""
+    """Run a single iteration of portfolio allocation drift check and rebalance.
+    Uses WS prices only — no REST calls."""
     try:
         regime, _ = get_market_regime()
         if regime == "BEAR":
@@ -45,9 +39,6 @@ def run_rebalance(get_balance_func):
         if not state.positions:
             log.info("[REBALANCE] No positions to rebalance")
             return
-        
-        balance = get_balance_func(use_cache=True)
-        idr = balance.get("idr", 0)
         
         alloc = get_portfolio_allocation(get_balance_func)
         if not alloc:

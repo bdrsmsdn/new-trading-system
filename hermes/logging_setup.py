@@ -59,7 +59,7 @@ class HttpRequestTracker:
         for r in recent:
             by_caller[r["caller"]] += 1
         
-        ratelimit_log.error(f"🚨 HTTP 429 TRIGGERED!")
+        ratelimit_log.error(f"[!] HTTP 429 TRIGGERED!")
         ratelimit_log.error(f"   URL: {trigger_entry['url']}")
         ratelimit_log.error(f"   Caller: {trigger_entry['caller']}")
         ratelimit_log.error(f"   Requests in last 60s: {len(recent)}")
