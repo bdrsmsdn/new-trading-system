@@ -23,9 +23,12 @@ _rest_budget_count = 0
 _rest_budget_reset_time = 0.0
 
 def _check_budget() -> bool:
-    """Check if we have REST budget remaining. Returns False if exhausted."""
+    """Check if we have REST budget remaining AND cooldown is not active."""
     global _rest_budget_count, _rest_budget_reset_time
     now = time.time()
+    # If global cooldown is active, no REST at all
+    if now < _global_rate_limit_until:
+        return False
     if now - _rest_budget_reset_time > 60:
         _rest_budget_count = 0
         _rest_budget_reset_time = now
