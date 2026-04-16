@@ -426,20 +426,20 @@ def api_call(method: str, **params) -> dict:
     return {"success": 0, "error": "max retries exceeded"}
 
 def fetch_fear_greed() -> Tuple[int, str]:
-    """Fetch Fear & Greed index from alternative.me."""
+    """Fetch Fear & Greed index from alternative.me via throttled public GET."""
+    body = _throttled_public_get("https://api.alternative.me/fng/?limit=1")
+    if body is None:
+        log.warning("F&G fetch failed: rate limited or error, using cached value")
+        return state.fg_value, state.fg_class
     try:
-        result = subprocess.run([
-            "curl", "-s", "https://api.alternative.me/fng/?limit=1"
-        ], capture_output=True, text=True, timeout=10)
-        
-        data = json.loads(result.stdout)
+        data = json.loads(body)
         fg_value = int(data["data"][0]["value"])
         fg_class = data["data"][0]["value_classification"]
         state.fg_value = fg_value
         state.fg_class = fg_class
         return fg_value, fg_class
     except Exception as e:
-        log.warning(f"F&G fetch failed: {e}")
+        log.warning(f"F&G parse failed: {e}, using cached value")
         return state.fg_value, state.fg_class
 
 def fetch_polymarket_vibes() -> List[Dict]:
@@ -570,48 +570,59 @@ _last_public_rest_call: float = 0.0
 _global_rate_limit_until: float = 0.0   # if set, block all public REST until then
 
 
-def _throttled_public_get(url: str, timeout: int = 10) -> Optional[str]:
+def _throttled_public_get(url: str, timeout: int = 10, max_retries: int = 3) -> Optional[str]:
     """
     Make a throttled public GET via curl.
     - Enforces min 0.4s interval between calls (~150 req/min ceiling).
-    - Detects HTTP 429 via curl's %{http_code} and sets a 60s global cooldown.
-    - Returns raw response body, or None on 429/error.
+    - On HTTP 429: retries with exponential backoff (1s, 2s, 4s), then gives up.
+    - Returns raw response body, or None after all retries exhausted.
     """
     global _last_public_rest_call, _global_rate_limit_until
 
-    # Honour global rate-limit cooldown
-    now = time.time()
-    if now < _global_rate_limit_until:
-        wait = _global_rate_limit_until - now
-        log.warning(f"[THROTTLE] Global cooldown active — waiting {wait:.1f}s")
-        time.sleep(wait)
+    for attempt in range(max_retries):
+        # Honour global rate-limit cooldown
+        now = time.time()
+        if now < _global_rate_limit_until:
+            wait = _global_rate_limit_until - now
+            log.warning(f"[THROTTLE] Global cooldown active — waiting {wait:.1f}s")
+            time.sleep(wait)
 
-    # Enforce per-call minimum interval
-    elapsed = time.time() - _last_public_rest_call
-    if elapsed < _PUBLIC_REST_MIN_INTERVAL:
-        time.sleep(_PUBLIC_REST_MIN_INTERVAL - elapsed)
+        # Enforce per-call minimum interval
+        elapsed = time.time() - _last_public_rest_call
+        if elapsed < _PUBLIC_REST_MIN_INTERVAL:
+            time.sleep(_PUBLIC_REST_MIN_INTERVAL - elapsed)
 
-    _last_public_rest_call = time.time()
+        _last_public_rest_call = time.time()
 
-    try:
-        result = subprocess.run(
-            ["curl", "-s", "-A", "Mozilla/5.0", "-w", "\n%{http_code}", url],
-            capture_output=True, text=True, timeout=timeout
-        )
-        # curl -w appends "\nSTATUS_CODE" after the body
-        parts = result.stdout.rsplit("\n", 1)
-        body = parts[0] if len(parts) == 2 else result.stdout
-        status_code = parts[1].strip() if len(parts) == 2 else "200"
+        try:
+            result = subprocess.run(
+                ["curl", "-s", "-A", "Mozilla/5.0", "-w", "\n%{http_code}", url],
+                capture_output=True, text=True, timeout=timeout
+            )
+            # curl -w appends "\nSTATUS_CODE" after the body
+            parts = result.stdout.rsplit("\n", 1)
+            body = parts[0] if len(parts) == 2 else result.stdout
+            status_code = parts[1].strip() if len(parts) == 2 else "200"
 
-        if status_code == "429":
-            _global_rate_limit_until = time.time() + 60
-            log.warning("[THROTTLE] HTTP 429 received — global cooldown 60s")
+            if status_code == "429":
+                if attempt < max_retries - 1:
+                    delay = 2 ** attempt
+                    log.warning(f"[THROTTLE] HTTP 429 — retrying in {delay}s (attempt {attempt+1}/{max_retries})")
+                    time.sleep(delay)
+                    continue
+                else:
+                    _global_rate_limit_until = time.time() + 60
+                    log.warning(f"[THROTTLE] HTTP 429 after all retries — global cooldown 60s")
+                    return None
+
+            return body
+        except Exception as e:
+            log.debug(f"[THROTTLE] Request failed for {url}: {e}")
+            if attempt < max_retries - 1:
+                delay = 2 ** attempt
+                time.sleep(delay)
+                continue
             return None
-
-        return body
-    except Exception as e:
-        log.debug(f"[THROTTLE] Request failed for {url}: {e}")
-        return None
 
 
 def fetch_candles(pair: str, interval: str = "1h", limit: int = 100) -> Optional[List[List[float]]]:
@@ -1270,11 +1281,20 @@ def update_price(pair: str, price: float, source: str = "rest") -> None:
         pass
 
 def fetch_all_prices() -> None:
-    """Fetch prices for all pairs."""
+    """Fetch prices for all pairs. Skips pairs on rate-limit/error, uses cached prices."""
+    fetched = 0
     for pair in ALL_TRACKED:
         price = fetch_price_rest(pair)
         if price:
             update_price(pair, price, "rest")
+            fetched += 1
+        else:
+            # Use cached price if available
+            if pair in prices and prices[pair].get("price"):
+                log.debug(f"Using cached price for {pair}")
+            else:
+                log.warning(f"Skipping {pair}: no price and no cache")
+    log.info(f"Fetched prices for {fetched}/{len(ALL_TRACKED)} pairs")
 
 # ============================================================================
 # ANALYSIS MODE
