@@ -53,10 +53,11 @@ def get_dynamic_position_size(pair: str, current_price: float, idr_balance: floa
     dynamic_size = base_size * combined_factor
     
     max_affordable = idr_balance * (1 - FEE_BUFFER)
-    final_size = min(dynamic_size, max_affordable)
-    
-    if final_size < MIN_TRADE_RP * 0.5:
+    if max_affordable < MIN_TRADE_RP:
         final_size = 0
-    
+    else:
+        # Clamp: at least MIN_TRADE_RP (Indodax minimum), at most max_affordable
+        final_size = max(float(MIN_TRADE_RP), min(dynamic_size, max_affordable))
+
     log.debug(f"Dynamic size for {pair}: Rp {final_size:,.0f} (vol_factor={vol_factor:.2f}, combined={combined_factor:.2f})")
     return final_size

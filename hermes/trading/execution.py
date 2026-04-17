@@ -1,10 +1,9 @@
 import time
-import math
 from hermes.logging_setup import log
 from hermes.state import state
 from hermes.api.auth import api_call
 from hermes.indicators.volatility import get_dynamic_position_size, calculate_volatility
-from hermes.config import MIN_TRADE_RP, FEE_BUFFER, PAIR_DECIMAL_PLACES, STOP_LOSS_PCT, TAKE_PROFIT_PCT
+from hermes.config import MIN_TRADE_RP, FEE_BUFFER, STOP_LOSS_PCT, TAKE_PROFIT_PCT
 
 def format_coin(amount: float, symbol: str) -> str:
     """Format coin amount for display."""
@@ -20,39 +19,30 @@ def format_coin(amount: float, symbol: str) -> str:
 def execute_buy(pair: str, price: float, idr_balance: float) -> bool:
     """Execute a buy order with dynamic position sizing based on volatility."""
     buy_amount_rp = get_dynamic_position_size(pair, price, idr_balance)
-    if buy_amount_rp < MIN_TRADE_RP * 0.5:
-        log.info(f"Skipping {pair}: position size too small after volatility adjustment (Rp {buy_amount_rp:,.0f})")
+    if buy_amount_rp <= 0:
+        log.info(f"Skipping {pair}: insufficient balance for minimum trade")
         return False
-    if buy_amount_rp > idr_balance * (1 - FEE_BUFFER):
-        buy_amount_rp = idr_balance * (1 - FEE_BUFFER)
-    
-    coin_amount = buy_amount_rp / price
-    
-    decimals = PAIR_DECIMAL_PLACES.get(pair, 4)
-    if decimals == 0:
-        coin_amount = math.floor(coin_amount)
-    else:
-        coin_amount = math.floor(coin_amount * (10 ** decimals)) / (10 ** decimals)
-    
-    if coin_amount <= 0:
-        log.info(f"Skipping {pair}: coin amount too small")
-        return False
-    
+
     vol_factor = calculate_volatility(pair, price)
-    log.info(f"BUY order (dynamic, vol_factor={vol_factor:.2f}): {format_coin(coin_amount, pair)} @ Rp {price:,.0f}")
-    
+    log.info(f"BUY order (dynamic, vol_factor={vol_factor:.2f}): Rp {buy_amount_rp:,.0f} @ Rp {price:,.0f}")
+
     result = api_call("trade",
-        pair=f"{pair}idr",
+        pair=f"{pair}_idr",
         type="buy",
         price=int(price),
-        amount=str(coin_amount)
+        idr=str(int(buy_amount_rp))
     )
-    
+
     if result.get("success") == 1:
         trade_details = result["return"]
+        # Actual coin received is in receive_{pair} (e.g. receive_doge)
+        coin_amount = float(trade_details.get(f"receive_{pair}", 0) or 0)
+        if coin_amount <= 0:
+            coin_amount = buy_amount_rp / price  # fallback estimate
+        spent_rp = float(trade_details.get("spend_rp", buy_amount_rp) or buy_amount_rp)
         log.info(f"✅ BUY SUCCESS: {format_coin(coin_amount, pair)} @ Rp {price:,.0f}")
-        log.info(f"   Total: Rp {float(trade_details.get('total', 0)):,.0f}")
-        
+        log.info(f"   Total: Rp {spent_rp:,.0f}")
+
         state.positions[pair] = {
             "entry_price": price,
             "qty": coin_amount,
@@ -71,13 +61,14 @@ def execute_buy(pair: str, price: float, idr_balance: float) -> bool:
 def execute_sell(pair: str, price: float, qty: float, reason: str = "") -> bool:
     """Execute a sell order."""
     log.info(f"SELL order ({reason}): {format_coin(qty, pair)} @ Rp {price:,.0f}")
-    
-    result = api_call("trade",
-        pair=f"{pair}idr",
-        type="sell",
-        price=int(price),
-        amount=str(qty)
-    )
+
+    sell_params = {
+        "pair": f"{pair}_idr",
+        "type": "sell",
+        "price": str(int(price)),
+        pair: str(qty),          # e.g. doge="100.0" — required by Indodax docs
+    }
+    result = api_call("trade", **sell_params)
     
     if result.get("success") == 1:
         trade_details = result["return"]
