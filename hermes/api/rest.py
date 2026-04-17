@@ -1,4 +1,5 @@
 import time
+import asyncio
 import json
 import subprocess
 import inspect
@@ -87,6 +88,58 @@ def _throttled_public_get(url: str, timeout: int = 10, max_retries: int = 2) -> 
             log.debug(f"[THROTTLE] Request failed for {url}: {e}")
             if attempt < max_retries - 1:
                 time.sleep(2)
+                continue
+            return None
+
+async def _async_throttled_public_get(url: str, timeout: int = 10, max_retries: int = 2) -> Optional[str]:
+    """Async-safe throttled GET — uses await asyncio.sleep and asyncio.to_thread.
+    Use this from daemon/event-loop contexts to avoid blocking the event loop."""
+    global _last_public_rest_call, _global_rate_limit_until
+    caller = inspect.stack()[1].function
+
+    if not _check_budget():
+        log.debug(f"[THROTTLE] REST budget exhausted ({_rest_budget_count}/{_REST_BUDGET_MAX}/min), skipping {url}")
+        return None
+
+    for attempt in range(max_retries):
+        now = time.time()
+        if now < _global_rate_limit_until:
+            wait = _global_rate_limit_until - now
+            log.debug(f"[THROTTLE] Global cooldown active, waiting {wait:.0f}s")
+            await asyncio.sleep(wait)
+
+        elapsed = time.time() - _last_public_rest_call
+        if elapsed < _PUBLIC_REST_MIN_INTERVAL:
+            await asyncio.sleep(_PUBLIC_REST_MIN_INTERVAL - elapsed)
+
+        _last_public_rest_call = time.time()
+        start_time = time.time()
+
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ["curl", "-s", "-A", "Mozilla/5.0", "-w", "\n%{http_code}", url],
+                capture_output=True, text=True, timeout=timeout
+            )
+            latency = (time.time() - start_time) * 1000
+            _consume_budget()
+
+            parts = result.stdout.rsplit("\n", 1)
+            body = parts[0] if len(parts) == 2 else result.stdout
+            status_code = parts[1].strip() if len(parts) == 2 else "200"
+
+            tracker.log_request(url, "GET", caller, status_code, latency)
+
+            if status_code == "429":
+                _global_rate_limit_until = time.time() + 300
+                log.warning(f"[THROTTLE] HTTP 429 from {caller} — global cooldown 300s (budget: {_rest_budget_count}/{_REST_BUDGET_MAX})")
+                return None
+
+            return body
+        except Exception as e:
+            log.debug(f"[THROTTLE] Request failed for {url}: {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2)
                 continue
             return None
 
@@ -179,6 +232,34 @@ def fetch_candles(pair: str, interval: str = "1h", limit: int = 100) -> Optional
         return cached["candles"] if cached else None
 
     body = _throttled_public_get(
+        f"https://indodax.com/api/klines/{pair}idr?interval={interval}&limit={limit}"
+    )
+    if body is None:
+        return cached["candles"] if cached else None
+
+    try:
+        data = json.loads(body)
+        if data.get("success") == 1:
+            candles = data.get("klines", [])
+            _candle_cache[cache_key] = {"candles": candles, "ts": time.time()}
+            return candles
+        return cached["candles"] if cached else None
+    except Exception as e:
+        log.debug(f"Candles fetch failed for {pair} ({interval}): {e}")
+        return cached["candles"] if cached else None
+
+async def fetch_candles_async(pair: str, interval: str = "1h", limit: int = 100) -> Optional[List[List[float]]]:
+    """Async-safe version of fetch_candles for daemon/event-loop context."""
+    cache_key = f"{pair}_{interval}"
+    ttl = CANDLE_TTL.get(interval, 600)
+    cached = _candle_cache.get(cache_key)
+    if cached and (time.time() - cached["ts"]) < ttl:
+        return cached["candles"]
+
+    if not _check_budget():
+        return cached["candles"] if cached else None
+
+    body = await _async_throttled_public_get(
         f"https://indodax.com/api/klines/{pair}idr?interval={interval}&limit={limit}"
     )
     if body is None:
