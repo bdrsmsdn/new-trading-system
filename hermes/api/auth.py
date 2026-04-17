@@ -8,25 +8,36 @@ from hermes.logging_setup import log, tracker
 # Global cooldown
 _global_rate_limit_until = 0.0
 
+# In-memory nonce guard — ensures monotonicity even when file I/O fails
+_last_nonce = 0
+
 def get_nonce() -> int:
     """Get and increment nonce for API calls."""
+    global _last_nonce
     try:
         if NONCE_FILE.exists():
             with open(NONCE_FILE, "r") as f:
                 content = f.read().strip()
+            try:
                 current = int(content) if content else 0
+            except ValueError:
+                log.warning(f"Nonce file corrupted ('{content}'), resetting")
+                current = 0
         else:
             current = 0
-        
+
         ms = int(time.time() * 1000)
-        new_nonce = max(ms, current + 1)
-        
+        new_nonce = max(ms, current + 1, _last_nonce + 1)
+        _last_nonce = new_nonce
+
         with open(NONCE_FILE, "w") as f:
             f.write(str(new_nonce))
         return new_nonce
     except Exception as e:
         log.error(f"Nonce error: {e}")
-        return int(time.time() * 1000)
+        fallback = max(int(time.time() * 1000), _last_nonce + 1)
+        _last_nonce = fallback  # persist in memory so next call cannot reuse it
+        return fallback
 
 def sign_request(params_str: str) -> str:
     """Generate HMAC-SHA512 signature."""
