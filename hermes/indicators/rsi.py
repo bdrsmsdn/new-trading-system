@@ -119,6 +119,32 @@ def get_multi_rsi(pair: str, price: float) -> Dict[str, float]:
     _multi_rsi_cache[pair] = {"rsi": dict(result), "ts": time.time()}
     return result
 
+async def get_multi_rsi_async(pair: str, price: float) -> Dict[str, float]:
+    """Async-safe version of get_multi_rsi for daemon/event-loop context.
+    Uses fetch_candles_async to avoid blocking the event loop during REST calls."""
+    from hermes.api.rest import fetch_candles_async
+
+    rsi_3m = update_rsi(pair, price, period=3)
+
+    cached = _multi_rsi_cache.get(pair)
+    if cached and (time.time() - cached["ts"]) < _MULTI_RSI_TTL:
+        result = dict(cached["rsi"])
+        result["3m"] = rsi_3m
+        return result
+
+    result = {"3m": rsi_3m, "1h": 50.0, "4h": 50.0}
+
+    timeframe_map = {"1h": ("1h", 14), "4h": ("4h", 14)}
+    for key, (interval, period) in timeframe_map.items():
+        candles = await fetch_candles_async(pair, interval=interval, limit=100)
+        if candles:
+            rsi = calc_rsi_from_candles(candles, period=period)
+            if rsi is not None:
+                result[key] = rsi
+
+    _multi_rsi_cache[pair] = {"rsi": dict(result), "ts": time.time()}
+    return result
+
 def calc_classic_rsi(prices: List[float], period: int = 14) -> Optional[float]:
     """Calculate classic RSI from price list (for analysis mode)."""
     if len(prices) < period + 1:

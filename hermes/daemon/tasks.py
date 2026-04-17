@@ -7,12 +7,12 @@ from hermes.state import state, prices, _multi_rsi_cache
 from hermes.config import (
     ALL_TRACKED, MAX_ACTIVE_PAIRS, MIN_ACTIVE_PAIRS,
     ANALYSIS_REASSESS_INTERVAL, DAEMON_TRADE_CHECK_INTERVAL, DAEMON_FG_FETCH_INTERVAL,
-    WS_PAIRS, FG_BUY_THRESHOLD, MIN_TRADE_RP, MAX_TRADE_RP,
+    DAEMON_REBALANCE_INTERVAL, WS_PAIRS, FG_BUY_THRESHOLD, MIN_TRADE_RP, MAX_TRADE_RP,
     STOP_LOSS_PCT, TAKE_PROFIT_PCT
 )
 from hermes.api.websocket import ws_client
 from hermes.indicators.signals import get_daily_position, get_signal, get_market_regime, get_regime_trading_config
-from hermes.indicators.rsi import get_rsi, get_multi_rsi
+from hermes.indicators.rsi import get_rsi, get_multi_rsi_async
 from hermes.indicators.fear_greed import fetch_fear_greed
 from hermes.trading.positions import check_open_positions
 from hermes.trading.execution import execute_buy
@@ -22,7 +22,7 @@ _MULTI_RSI_TTL = 300  # Match rsi.py TTL
 _RANK_BATCH_SIZE = 10  # Only refresh RSI for top N pairs per rank cycle
 _RANK_STAGGER_SLEEP = 2.0  # Seconds between pairs during ranking
 
-def rank_all_pairs() -> List[Tuple[str, int, str, float]]:
+async def rank_all_pairs() -> List[Tuple[str, int, str, float]]:
     """Score and rank ALL tracked pairs for trading priority.
     Only refreshes multi-RSI for a limited batch to stay within REST budget."""
     from hermes.api.rest import _check_budget
@@ -45,9 +45,9 @@ def rank_all_pairs() -> List[Tuple[str, int, str, float]]:
             multi_rsi["3m"] = get_rsi(pair)
         elif fresh_rsi_count < _RANK_BATCH_SIZE and _check_budget():
             # Only fetch fresh RSI for limited pairs, and only if budget allows
-            multi_rsi = get_multi_rsi(pair, price)
+            multi_rsi = await get_multi_rsi_async(pair, price)
             fresh_rsi_count += 1
-            time.sleep(_RANK_STAGGER_SLEEP)  # Heavy stagger between REST calls
+            await asyncio.sleep(_RANK_STAGGER_SLEEP)  # Non-blocking stagger between REST calls
         else:
             # No cache, no budget — use 3m RSI only (from WS price updates)
             multi_rsi = {"3m": get_rsi(pair), "1h": 50.0, "4h": 50.0}
@@ -61,7 +61,7 @@ def rank_all_pairs() -> List[Tuple[str, int, str, float]]:
     log.info(f"[RANK] Ranked {len(rankings)} pairs (fresh RSI for {fresh_rsi_count})")
     return rankings
 
-def update_active_pairs() -> Tuple[List[str], List[Tuple[str, int, str, float]]]:
+async def update_active_pairs() -> Tuple[List[str], List[Tuple[str, int, str, float]]]:
     """Auto-adjust active_pairs based on current signal scores + market regime."""
     locked = set(state.positions.keys())
     regime_cfg = get_regime_trading_config()
@@ -69,7 +69,7 @@ def update_active_pairs() -> Tuple[List[str], List[Tuple[str, int, str, float]]]
     effective_max = int(MAX_ACTIVE_PAIRS * regime_cfg["max_active_multiplier"])
     effective_max = max(effective_max, MIN_ACTIVE_PAIRS)
     
-    rankings = rank_all_pairs()
+    rankings = await rank_all_pairs()
 
     new_active = list(locked)
     slots = effective_max - len(locked)
@@ -116,7 +116,7 @@ async def daemon_pair_reassess():
     while True:
         await asyncio.sleep(ANALYSIS_REASSESS_INTERVAL)
         try:
-            new_active, rankings = update_active_pairs()
+            new_active, rankings = await update_active_pairs()
             state.active_pairs = new_active
             state.save()
 
@@ -209,6 +209,16 @@ async def daemon_morning_brief(get_balance_func):
         telegram_morning_brief(state.fg_value, state.fg_class, balance.get('idr', 0), state.positions)
         log.info("=" * 60)
 
+async def daemon_rebalance(get_balance_func):
+    """Periodically run portfolio drift check and rebalance every 6 hours."""
+    from hermes.trading.rebalancer import run_rebalance
+    while True:
+        await asyncio.sleep(DAEMON_REBALANCE_INTERVAL)
+        try:
+            run_rebalance(get_balance_func)
+        except Exception as e:
+            log.error(f"[REBALANCE] Daemon error: {e}")
+
 async def run_daemon(get_balance_func):
     """Run the trading daemon."""
     log.info("Hermes Trader Daemon starting...")
@@ -228,7 +238,7 @@ async def run_daemon(get_balance_func):
     log.info(f"WS parallel fill complete. Prices loaded for {len(prices)} pairs.")
     
     if not state.active_pairs:
-        state.active_pairs, _ = update_active_pairs()
+        state.active_pairs, _ = await update_active_pairs()
         state.save()
     log.info(f"Active pairs: {', '.join(state.active_pairs)}")
     
@@ -238,5 +248,6 @@ async def run_daemon(get_balance_func):
         daemon_trade_check(get_balance_func),
         daemon_fg_fetch(),
         daemon_pair_reassess(),
-        daemon_morning_brief(get_balance_func)
+        daemon_morning_brief(get_balance_func),
+        daemon_rebalance(get_balance_func)
     )
