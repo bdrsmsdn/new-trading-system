@@ -1,50 +1,52 @@
 """
-RSI + EMA Crossover + Orderbook Trading Strategy
+Simplified RSI + Orderbook Trading Strategy V2
 
-A professional trading strategy combining:
-- RSI(14) for momentum confirmation
-- EMA(9,21) crossover for trend detection
-- Orderbook imbalance for institutional flow analysis
-- Multi-timeframe confirmation (5m and 15m)
+A streamlined trading strategy combining:
+- RSI(14) for momentum
+- Daily Position for range-based entries  
+- Orderbook imbalance for institutional flow
+- Price momentum direction
 
-Author: @calledkeyy (strategy source)
+Uses only existing indicators that work without historical candles:
+- get_rsi(pair) - current RSI value
+- get_daily_position(pair, price) - 0-100% daily range
+- get_orderbook(pair) - bid/ask imbalance
+
+Source: Adapted from @calledkeyy strategy
 Implementation: Hermes Trader
 """
 
 import time
-from typing import Optional, Dict, Tuple, List
+from typing import Optional, Dict, List
 from dataclasses import dataclass, asdict
+
 from hermes.logging_setup import log
 from hermes.state import prices, state
-from hermes.api.rest import fetch_price_rest, _check_budget
-from hermes.api.orderbook import get_orderbook, OrderbookData, orderbook_confirms_signal
-from hermes.indicators.candles import (
-    calc_ema, calc_ema_from_candles, get_candle_closes,
-    get_swing_low, get_swing_high, is_low_volatility,
-    detect_ema_crossover_history, get_candle_data
-)
-from hermes.indicators.rsi import calc_rsi_from_candles
+from hermes.api.orderbook import get_orderbook, orderbook_confirms_signal
 from hermes.config import (
-    MAX_TRADE_RP, MIN_TRADE_RP, STOP_LOSS_PCT, TAKE_PROFIT_PCT,
-    PAIR_DECIMAL_PLACES
+    MAX_TRADE_RP, MIN_TRADE_RP, PAIR_DECIMAL_PLACES
 )
 
 
 # Strategy constants
 RSI_PERIOD = 14
-EMA_FAST = 9
-EMA_SLOW = 21
 RSI_OVERSOLD = 30
 RSI_OVERBOUGHT = 70
-RSI_OVERSOLD_EXIT = 35  # RSI exiting oversold zone
-RSI_OVERBOUGHT_EXIT = 65  # RSI exiting overbought zone
-MAX_CROSSOVER_AGE = 3  # Ignore signals if crossover > 3 candles ago
-LOW_VOLATILITY_THRESHOLD = 0.003  # 0.3% ATR threshold
+RSI_OVERSOLD_EXIT = 35
+RSI_OVERBOUGHT_EXIT = 65
 
-# Signal confidence levels
-CONFIDENCE_HIGH = "High"
-CONFIDENCE_MEDIUM = "Medium"
-CONFIDENCE_LOW = "Low"
+# Daily position thresholds
+DP_BUY_ZONE = 30  # Price in lower 30% of daily range
+DP_SELL_ZONE = 70  # Price in upper 70% of daily range
+
+# Orderbook imbalance thresholds
+OB_BULLISH_THRESHOLD = 1.2   # bid_vol/ask_vol > 1.2 = bullish pressure
+OB_BEARISH_THRESHOLD = 0.8   # bid_vol/ask_vol < 0.8 = bearish pressure
+
+# Confidence levels
+CONF_HIGH = "High"
+CONF_MEDIUM = "Medium"
+CONF_LOW = "Low"
 
 
 @dataclass
@@ -57,22 +59,28 @@ class TradingSignal:
     take_profit_2: float
     take_profit_3: float
     rsi_value: float
-    ema_9: float
-    ema_21: float
+    daily_position: float
     trend_bias: str  # "bullish", "bearish", "neutral"
     signal_confidence: str  # "Low", "Medium", "High"
     reason: str
     orderbook_imbalance: float
     risk_percent: float
     position_size: float
-    
+
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         return asdict(self)
 
 
 class StrategyV2:
-    """RSI + EMA Crossover + Orderbook Trading Strategy."""
+    """Simplified RSI + Orderbook Trading Strategy.
+    
+    Replaces EMA crossover (which requires candles) with:
+    - RSI momentum (using Wilder's smoothed RSI)
+    - Daily Position (range-based entry timing)
+    - Orderbook imbalance (institutional flow)
+    - Price momentum (recent price changes)
+    """
     
     def __init__(self, pair: str, capital: float = 0.0, risk_pct: float = 0.01):
         """Initialize strategy.
@@ -85,7 +93,10 @@ class StrategyV2:
         self.pair = pair
         self.capital = capital if capital > 0 else MAX_TRADE_RP
         self.risk_pct = risk_pct
-        self.intervals = ["5m", "15m"]  # Multi-timeframe analysis
+        
+        # Track RSI history for direction
+        self._rsi_history: List[float] = []
+        self._max_rsi_history = 5  # Keep last 5 RSI values
     
     def analyze(self) -> TradingSignal:
         """Run complete strategy analysis.
@@ -98,101 +109,64 @@ class StrategyV2:
         if not current_price:
             return self._no_signal("No price data available")
         
+        # Get RSI and track direction
+        rsi = self._get_rsi_with_direction()
+        rsi_value = rsi["current"]
+        rsi_direction = rsi["direction"]  # "up", "down", "neutral"
+        
+        # Get daily position
+        daily_pos = self._get_daily_position(current_price)
+        
         # Get orderbook data
         ob = get_orderbook(self.pair)
         imbalance = ob.imbalance if ob else 1.0
         
-        # Get candle data for multiple timeframes
-        tf_data = self._get_multi_timeframe_data()
-        if not tf_data:
-            return self._no_signal("No candle data available")
+        # Get recent price change for momentum
+        price_change_pct = self._get_price_momentum()
         
-        # Use 5m as primary, 15m for confirmation
-        primary = tf_data.get("5m", {})
-        secondary = tf_data.get("15m", {})
-        
-        if not primary.get("ema9") or not primary.get("ema21"):
-            return self._no_signal("Insufficient EMA data")
-        
-        # Extract values
-        ema9 = primary["ema9"]
-        ema21 = primary["ema21"]
-        ema9_prev = primary.get("ema9_prev", ema9)
-        ema21_prev = primary.get("ema21_prev", ema21)
-        rsi = primary.get("rsi")
-        candles = primary.get("candles", [])
-        current_price_tf = primary.get("current_price", current_price)
-        low_volatility = primary.get("low_volatility", False)
-        
-        # Check signal filters
-        if low_volatility:
-            return self._no_signal("Low volatility - avoiding signal")
-        
-        # Detect EMA crossover
-        crossover_type, crossover_age = detect_ema_crossover_history(
-            primary.get("ema9_history", [ema9, ema9_prev]),
-            primary.get("ema21_history", [ema21, ema21_prev])
-        )
-        
-        if crossover_age is not None and crossover_age > MAX_CROSSOVER_AGE:
-            return self._no_signal(f"EMA crossover too old ({crossover_age} candles ago)")
-        
-        # Calculate RSI direction
-        rsi_direction = self._get_rsi_direction(candles)
-        
-        # Determine signal
-        signal = self._evaluate_signal(
-            crossover_type=crossover_type,
-            rsi=rsi,
+        # Evaluate LONG/SHORT conditions
+        signal, confidence, reasons = self._evaluate_signal(
+            rsi_value=rsi_value,
             rsi_direction=rsi_direction,
-            price=current_price_tf,
-            ema9=ema9,
-            ema21=ema21,
-            ob=ob,
-            secondary=secondary
+            daily_pos=daily_pos,
+            imbalance=imbalance,
+            price_change_pct=price_change_pct
         )
         
         if signal == "NO TRADE SETUP":
-            return self._no_signal("Signal conditions not met")
+            return self._no_signal(reasons[0] if reasons else "Signal conditions not met")
         
         # Calculate entry, stop loss, take profits
         entry_price, stop_loss, tp1, tp2, tp3 = self._calculate_entry_sl_tp(
             signal=signal,
-            price=current_price_tf,
-            candles=candles,
-            ema9=ema9,
-            ema21=ema21
+            price=current_price,
+            rsi_value=rsi_value,
+            daily_pos=daily_pos
         )
         
         # Calculate position size
-        risk_amount = self.capital * self.risk_pct
-        risk_per_unit = abs(entry_price - stop_loss) if stop_loss else entry_price * 0.02
-        position_size = risk_amount / risk_per_unit if risk_per_unit > 0 else 0
-        
-        # Determine confidence
-        confidence = self._calculate_confidence(
-            signal=signal,
-            rsi=rsi,
-            crossover_age=crossover_age,
-            ob=ob,
-            secondary=secondary
+        position_size = self._calculate_position_size(
+            entry_price=entry_price,
+            stop_loss=stop_loss
         )
         
         # Determine trend bias
         trend_bias = self._determine_trend_bias(
-            ema9=ema9,
-            ema21=ema21,
-            price=current_price_tf
+            rsi_value=rsi_value,
+            daily_pos=daily_pos,
+            price_change_pct=price_change_pct
         )
         
         # Build reason string
         reason = self._build_reason(
             signal=signal,
-            rsi=rsi,
-            crossover_type=crossover_type,
-            crossover_age=crossover_age,
-            ob=ob,
-            confidence=confidence
+            rsi_value=rsi_value,
+            rsi_direction=rsi_direction,
+            daily_pos=daily_pos,
+            imbalance=imbalance,
+            price_change_pct=price_change_pct,
+            confidence=confidence,
+            reasons=reasons
         )
         
         return TradingSignal(
@@ -202,9 +176,8 @@ class StrategyV2:
             take_profit_1=tp1,
             take_profit_2=tp2,
             take_profit_3=tp3,
-            rsi_value=rsi if rsi else 50.0,
-            ema_9=ema9,
-            ema_21=ema21,
+            rsi_value=rsi_value,
+            daily_position=daily_pos,
             trend_bias=trend_bias,
             signal_confidence=confidence,
             reason=reason,
@@ -219,426 +192,371 @@ class StrategyV2:
         cached = prices.get(self.pair, {})
         price = cached.get("price")
         if price and (time.time() - cached.get("ts", 0)) < 60:
-            return price
+            return float(price)
         
-        # Fallback to REST (with budget check)
-        if _check_budget():
-            return fetch_price_rest(self.pair)
-        
+        # Fallback to REST and update cache
+        from hermes.api.rest import fetch_price_rest, update_price
+        price = fetch_price_rest(self.pair)
+        if price:
+            update_price(self.pair, price, source="strategy_v2")
         return price
     
-    def _get_multi_timeframe_data(self) -> Dict[str, dict]:
-        """Get candle data for multiple timeframes.
+    def _get_rsi_with_direction(self) -> Dict:
+        """Get current RSI and calculate direction from history.
         
         Returns:
-            Dict mapping interval -> {
-                'candles': [...],
-                'ema9': float,
-                'ema21': float,
-                'rsi': float,
-                'ema9_prev': float,
-                'ema21_prev': float,
-                'current_price': float,
-                'low_volatility': bool
-            }
+            Dict with 'current' RSI value and 'direction' (up/down/neutral)
         """
-        result = {}
+        from hermes.indicators.rsi import get_rsi, update_rsi
         
-        for interval in self.intervals:
-            candles = get_candle_data(self.pair, interval=interval, limit=100)
-            
-            if not candles or len(candles) < EMA_SLOW + 1:
-                continue
-            
-            closes = get_candle_closes(candles)
-            
-            # Calculate current and previous EMAs
-            ema9 = calc_ema(closes, EMA_FAST)
-            ema21 = calc_ema(closes, EMA_SLOW)
-            
-            # Previous candle's EMA (need 2 candles back for crossover detection)
-            if len(closes) >= EMA_SLOW + 2:
-                closes_with_prev = closes[:-1]  # Remove current
-                ema9_prev = calc_ema(closes_with_prev, EMA_FAST)
-                ema21_prev = calc_ema(closes_with_prev, EMA_SLOW)
+        current_price = self._get_current_price()
+        if current_price:
+            # Update RSI with current price
+            rsi_value = update_rsi(self.pair, current_price, period=RSI_PERIOD)
+        else:
+            rsi_value = get_rsi(self.pair)
+        
+        # Track history for direction
+        self._rsi_history.append(rsi_value)
+        if len(self._rsi_history) > self._max_rsi_history:
+            self._rsi_history.pop(0)
+        
+        # Calculate direction
+        if len(self._rsi_history) >= 2:
+            if self._rsi_history[-1] > self._rsi_history[-2]:
+                direction = "up"
+            elif self._rsi_history[-1] < self._rsi_history[-2]:
+                direction = "down"
             else:
-                ema9_prev = ema9
-                ema21_prev = ema21
-            
-            # EMA history for crossover detection
-            ema9_history = []
-            ema21_history = []
-            for i in range(min(5, len(closes))):
-                subset = closes[:-(i) if i > 0 else None] if i > 0 else closes
-                if len(subset) >= EMA_SLOW:
-                    ema9_history.append(calc_ema(subset, EMA_FAST))
-                    ema21_history.append(calc_ema(subset, EMA_SLOW))
-            
-            # Calculate RSI
-            rsi = calc_rsi_from_candles(candles, period=RSI_PERIOD)
-            
-            # Check volatility
-            low_vol = is_low_volatility(candles, threshold_pct=LOW_VOLATILITY_THRESHOLD)
-            
-            result[interval] = {
-                "candles": candles,
-                "ema9": ema9,
-                "ema21": ema21,
-                "ema9_prev": ema9_prev,
-                "ema21_prev": ema21_prev,
-                "ema9_history": list(reversed(ema9_history)) if ema9_history else [ema9],
-                "ema21_history": list(reversed(ema21_history)) if ema21_history else [ema21],
-                "rsi": rsi,
-                "current_price": closes[-1] if closes else None,
-                "low_volatility": low_vol
-            }
+                direction = "neutral"
+        else:
+            direction = "neutral"
         
-        return result
+        return {"current": rsi_value, "direction": direction}
     
-    def _get_rsi_direction(self, candles: List[List[float]]) -> str:
-        """Determine RSI direction from recent candles.
-        
-        Args:
-            candles: Recent candles
+    def _get_daily_position(self, current_price: float) -> float:
+        """Get daily position (0-100%) from existing function."""
+        from hermes.indicators.signals import get_daily_position
+        return get_daily_position(self.pair, current_price)
+    
+    def _get_price_momentum(self) -> float:
+        """Calculate recent price change percentage.
         
         Returns:
-            'UP', 'DOWN', or 'FLAT'
+            Price change in percent (e.g., 2.5 for 2.5% change)
         """
-        if len(candles) < 5:
-            return "FLAT"
-        
-        # Calculate RSI for last 5 candles
-        rsi_values = []
-        for i in range(1, 6):
-            if len(candles) >= i + RSI_PERIOD:
-                subset = candles[:-(i-1)] if i > 1 else candles
-                rsi = calc_rsi_from_candles(subset, period=RSI_PERIOD)
-                if rsi is not None:
-                    rsi_values.append(rsi)
-        
-        if len(rsi_values) < 2:
-            return "FLAT"
-        
-        # Check direction: compare oldest to newest in our window
-        if rsi_values[-1] > rsi_values[0] + 2:
-            return "UP"
-        elif rsi_values[-1] < rsi_values[0] - 2:
-            return "DOWN"
-        
-        return "FLAT"
+        history = state.price_history.get(self.pair, [])
+        if len(history) >= 2:
+            old_price = history[-2]
+            if old_price > 0:
+                return ((history[-1] - old_price) / old_price) * 100
+        return 0.0
     
     def _evaluate_signal(
         self,
-        crossover_type: str,
-        rsi: Optional[float],
+        rsi_value: float,
         rsi_direction: str,
-        price: float,
-        ema9: float,
-        ema21: float,
-        ob: Optional[OrderbookData],
-        secondary: dict
-    ) -> str:
-        """Evaluate if a trade signal is present.
-        
-        Args:
-            crossover_type: "BULLISH", "BEARISH", or "NONE"
-            rsi: Current RSI value
-            rsi_direction: "UP", "DOWN", or "FLAT"
-            price: Current price
-            ema9: Current EMA9
-            ema21: Current EMA21
-            ob: Orderbook data
-            secondary: Secondary timeframe data
+        daily_pos: float,
+        imbalance: float,
+        price_change_pct: float
+    ) -> tuple:
+        """Evaluate LONG/SHORT/NO TRADE conditions.
         
         Returns:
-            "LONG", "SHORT", or "NO TRADE SETUP"
+            Tuple of (signal_type, confidence, reasons_list)
         """
-        # LONG SETUP: All conditions must be true
+        reasons = []
+        conditions_met = 0
+        total_conditions = 0
+        
+        # ===== LONG CONDITIONS =====
         long_conditions = []
         
-        # 1. RSI <= 30 OR RSI exiting oversold
-        if rsi is not None:
-            rsi_ok = rsi <= RSI_OVERSOLD or (rsi <= RSI_OVERSOLD_EXIT and rsi_direction == "UP")
-            long_conditions.append(("RSI oversold condition", rsi_ok))
+        # 1. RSI in oversold or exiting
+        total_conditions += 1
+        if rsi_value <= RSI_OVERSOLD:
+            long_conditions.append(("RSI_OVERSOLD", True, f"RSI {rsi_value:.1f} ≤ {RSI_OVERSOLD}"))
+            conditions_met += 1
+        elif rsi_value <= RSI_OVERSOLD_EXIT:
+            long_conditions.append(("RSI_EXITING_OVERSOLD", True, f"RSI {rsi_value:.1f} near oversold"))
+            conditions_met += 0.5  # Partial credit
         else:
-            long_conditions.append(("RSI oversold condition", False))
+            long_conditions.append(("RSI_NOT_OVERSOLD", False, f"RSI {rsi_value:.1f} above oversold"))
         
-        # 2. EMA 9 crosses ABOVE EMA 21 (bullish crossover)
-        crossover_ok = crossover_type == "BULLISH"
-        long_conditions.append(("Bullish EMA crossover", crossover_ok))
+        # 2. Daily position in buy zone
+        total_conditions += 1
+        if daily_pos <= DP_BUY_ZONE:
+            long_conditions.append(("DP_BUY_ZONE", True, f"Daily pos {daily_pos:.1f}% in buy zone"))
+            conditions_met += 1
+        elif daily_pos <= 40:
+            long_conditions.append(("DP_NEAR_BUY", True, f"Daily pos {daily_pos:.1f}% near buy zone"))
+            conditions_met += 0.5
+        else:
+            long_conditions.append(("DP_NOT_BUY", False, f"Daily pos {daily_pos:.1f}% above buy zone"))
         
-        # 3. Price closes above both EMAs
-        price_above_emas = price > ema9 and price > ema21
-        long_conditions.append(("Price above EMAs", price_above_emas))
+        # 3. RSI direction upward (momentum confirmation)
+        total_conditions += 1
+        if rsi_direction == "up":
+            long_conditions.append(("RSI_MOMENTUM_UP", True, "RSI momentum upward"))
+            conditions_met += 1
+        elif rsi_direction == "neutral":
+            long_conditions.append(("RSI_MOMENTUM_NEUTRAL", False, "RSI momentum neutral"))
+            conditions_met += 0.3
+        else:
+            long_conditions.append(("RSI_MOMENTUM_DOWN", False, "RSI momentum downward"))
         
-        # 4. RSI moving upward (confirming momentum)
-        rsi_momentum_ok = rsi_direction == "UP"
-        long_conditions.append(("RSI upward momentum", rsi_momentum_ok))
+        # 4. Orderbook bullish
+        total_conditions += 1
+        if imbalance >= OB_BULLISH_THRESHOLD:
+            long_conditions.append(("OB_BULLISH", True, f"Orderbook bullish {imbalance:.2f}x"))
+            conditions_met += 1
+        elif imbalance >= 1.0:
+            long_conditions.append(("OB_NEUTRAL_BULL", True, f"Orderbook slight bullish {imbalance:.2f}x"))
+            conditions_met += 0.5
+        else:
+            long_conditions.append(("OB_NOT_BULLISH", False, f"Orderbook not bullish {imbalance:.2f}x"))
+        
+        # 5. Positive price momentum
+        total_conditions += 1
+        if price_change_pct > 0:
+            long_conditions.append(("PRICE_UP", True, f"Price +{price_change_pct:.2f}%"))
+            conditions_met += 1
+        elif price_change_pct > -0.5:
+            long_conditions.append(("PRICE_FLAT", False, f"Price {price_change_pct:.2f}%"))
+            conditions_met += 0.3
+        else:
+            long_conditions.append(("PRICE_DOWN", False, f"Price {price_change_pct:.2f}%"))
         
         # Check LONG conditions
-        if all(condition[1] for condition in long_conditions):
-            # Optional: Check orderbook confirmation for LONG
-            if ob and not orderbook_confirms_signal(ob, "LONG"):
-                log.debug(f"[STRATEGY-V2] {self.pair.upper()}: LONG signal but orderbook not confirming")
-            
-            # Cross-check with secondary timeframe (15m)
-            if secondary:
-                sec_ema9 = secondary.get("ema9")
-                sec_ema21 = secondary.get("ema21")
-                sec_price = secondary.get("current_price")
-                if sec_ema9 and sec_ema21 and sec_price:
-                    # If 15m also bullish, it's a stronger signal
-                    if sec_price > sec_ema9 > sec_ema21:
-                        log.debug(f"[STRATEGY-V2] {self.pair.upper()}: LONG confirmed by 15m timeframe")
-            
-            return "LONG"
+        for name, met, desc in long_conditions:
+            if met:
+                reasons.append(desc)
         
-        # SHORT SETUP: All conditions must be true
+        # Determine signal
+        long_score = conditions_met / total_conditions
+        
+        # LONG check
+        if (rsi_value <= RSI_OVERSOLD_EXIT and 
+            daily_pos <= DP_BUY_ZONE and 
+            rsi_direction in ["up", "neutral"]):
+            
+            if long_score >= 0.8 and imbalance >= 1.0:
+                confidence = CONF_HIGH
+            elif long_score >= 0.6:
+                confidence = CONF_MEDIUM
+            else:
+                confidence = CONF_LOW
+            
+            return "LONG", confidence, reasons
+        
+        # ===== SHORT CONDITIONS =====
+        reasons = []
+        conditions_met = 0
+        total_conditions = 0
+        
         short_conditions = []
         
-        # 1. RSI >= 70 OR RSI exiting overbought
-        if rsi is not None:
-            rsi_ok = rsi >= RSI_OVERBOUGHT or (rsi >= RSI_OVERBOUGHT_EXIT and rsi_direction == "DOWN")
-            short_conditions.append(("RSI overbought condition", rsi_ok))
+        # 1. RSI in overbought or exiting
+        total_conditions += 1
+        if rsi_value >= RSI_OVERBOUGHT:
+            short_conditions.append(("RSI_OVERBOUGHT", True, f"RSI {rsi_value:.1f} ≥ {RSI_OVERBOUGHT}"))
+            conditions_met += 1
+        elif rsi_value >= RSI_OVERBOUGHT_EXIT:
+            short_conditions.append(("RSI_EXITING_OVERBOUGHT", True, f"RSI {rsi_value:.1f} near overbought"))
+            conditions_met += 0.5
         else:
-            short_conditions.append(("RSI overbought condition", False))
+            short_conditions.append(("RSI_NOT_OVERBOUGHT", False, f"RSI {rsi_value:.1f} below overbought"))
         
-        # 2. EMA 9 crosses BELOW EMA 21 (bearish crossover)
-        crossover_ok = crossover_type == "BEARISH"
-        short_conditions.append(("Bearish EMA crossover", crossover_ok))
+        # 2. Daily position in sell zone
+        total_conditions += 1
+        if daily_pos >= DP_SELL_ZONE:
+            short_conditions.append(("DP_SELL_ZONE", True, f"Daily pos {daily_pos:.1f}% in sell zone"))
+            conditions_met += 1
+        elif daily_pos >= 60:
+            short_conditions.append(("DP_NEAR_SELL", True, f"Daily pos {daily_pos:.1f}% near sell zone"))
+            conditions_met += 0.5
+        else:
+            short_conditions.append(("DP_NOT_SELL", False, f"Daily pos {daily_pos:.1f}% below sell zone"))
         
-        # 3. Price closes below both EMAs
-        price_below_emas = price < ema9 and price < ema21
-        short_conditions.append(("Price below EMAs", price_below_emas))
+        # 3. RSI direction downward
+        total_conditions += 1
+        if rsi_direction == "down":
+            short_conditions.append(("RSI_MOMENTUM_DOWN", True, "RSI momentum downward"))
+            conditions_met += 1
+        elif rsi_direction == "neutral":
+            short_conditions.append(("RSI_MOMENTUM_NEUTRAL", False, "RSI momentum neutral"))
+            conditions_met += 0.3
+        else:
+            short_conditions.append(("RSI_MOMENTUM_UP", False, "RSI momentum upward"))
         
-        # 4. RSI moving downward (confirming momentum)
-        rsi_momentum_ok = rsi_direction == "DOWN"
-        short_conditions.append(("RSI downward momentum", rsi_momentum_ok))
+        # 4. Orderbook bearish
+        total_conditions += 1
+        if imbalance <= OB_BEARISH_THRESHOLD:
+            short_conditions.append(("OB_BEARISH", True, f"Orderbook bearish {imbalance:.2f}x"))
+            conditions_met += 1
+        elif imbalance <= 1.0:
+            short_conditions.append(("OB_NEUTRAL_BEAR", True, f"Orderbook slight bearish {imbalance:.2f}x"))
+            conditions_met += 0.5
+        else:
+            short_conditions.append(("OB_NOT_BEARISH", False, f"Orderbook not bearish {imbalance:.2f}x"))
         
-        # Check SHORT conditions
-        if all(condition[1] for condition in short_conditions):
-            if ob and not orderbook_confirms_signal(ob, "SHORT"):
-                log.debug(f"[STRATEGY-V2] {self.pair.upper()}: SHORT signal but orderbook not confirming")
+        # 5. Negative price momentum
+        total_conditions += 1
+        if price_change_pct < 0:
+            short_conditions.append(("PRICE_DOWN", True, f"Price {price_change_pct:.2f}%"))
+            conditions_met += 1
+        elif price_change_pct < 0.5:
+            short_conditions.append(("PRICE_FLAT", False, f"Price {price_change_pct:.2f}%"))
+            conditions_met += 0.3
+        else:
+            short_conditions.append(("PRICE_UP", False, f"Price +{price_change_pct:.2f}%"))
+        
+        for name, met, desc in short_conditions:
+            if met:
+                reasons.append(desc)
+        
+        short_score = conditions_met / total_conditions
+        
+        if (rsi_value >= RSI_OVERBOUGHT_EXIT and 
+            daily_pos >= DP_SELL_ZONE and 
+            rsi_direction in ["down", "neutral"]):
             
-            # Cross-check with secondary timeframe
-            if secondary:
-                sec_ema9 = secondary.get("ema9")
-                sec_ema21 = secondary.get("ema21")
-                sec_price = secondary.get("current_price")
-                if sec_ema9 and sec_ema21 and sec_price:
-                    if sec_price < sec_ema9 < sec_ema21:
-                        log.debug(f"[STRATEGY-V2] {self.pair.upper()}: SHORT confirmed by 15m timeframe")
+            if short_score >= 0.8 and imbalance <= 1.0:
+                confidence = CONF_HIGH
+            elif short_score >= 0.6:
+                confidence = CONF_MEDIUM
+            else:
+                confidence = CONF_LOW
             
-            return "SHORT"
+            return "SHORT", confidence, reasons
         
-        return "NO TRADE SETUP"
+        return "NO TRADE SETUP", CONF_LOW, ["Conditions not aligned"]
     
     def _calculate_entry_sl_tp(
         self,
         signal: str,
         price: float,
-        candles: List[List[float]],
-        ema9: float,
-        ema21: float
-    ) -> Tuple[float, float, float, float, float]:
+        rsi_value: float,
+        daily_pos: float
+    ) -> tuple:
         """Calculate entry price, stop loss, and take profit levels.
-        
-        Args:
-            signal: "LONG" or "SHORT"
-            price: Current price
-            candles: Recent candles
-            ema9: Current EMA9
-            ema21: Current EMA21
         
         Returns:
             Tuple of (entry_price, stop_loss, tp1, tp2, tp3)
         """
-        # Entry at current price (or slightly better)
-        entry_price = price
+        # For LONG: SL below entry, TP above entry
+        # For SHORT: SL above entry, TP below entry
         
         if signal == "LONG":
-            # Stop loss: below recent swing low
-            swing_low = get_swing_low(candles, lookback=10)
-            if swing_low and swing_low < price * 0.98:
-                stop_loss = swing_low * 0.999  # Just below swing low
+            # Stop loss: 2-3% below entry, wider if RSI deeply oversold
+            if rsi_value <= RSI_OVERSOLD:
+                sl_pct = 0.03  # 3% for very oversold
             else:
-                # Fallback: ATR-based stop
-                stop_loss = price * (1 - STOP_LOSS_PCT)
+                sl_pct = 0.02  # 2% normal
             
-            # Take profits based on risk:reward
+            stop_loss = price * (1 - sl_pct)
+            entry_price = price
+            
+            # Take profits at 1:1, 1:2, 1:3 R:R
             risk = entry_price - stop_loss
-            tp1 = entry_price + risk * 1.0  # 1:1
-            tp2 = entry_price + risk * 2.0  # 1:2
-            tp3 = entry_price + risk * 3.0  # 1:3
-        
-        elif signal == "SHORT":
-            # Stop loss: above recent swing high
-            swing_high = get_swing_high(candles, lookback=10)
-            if swing_high and swing_high > price * 1.02:
-                stop_loss = swing_high * 1.001  # Just above swing high
-            else:
-                stop_loss = price * (1 + STOP_LOSS_PCT)
+            tp1 = entry_price + risk * 1
+            tp2 = entry_price + risk * 2
+            tp3 = entry_price + risk * 3
             
-            # Take profits
+        elif signal == "SHORT":
+            if rsi_value >= RSI_OVERBOUGHT:
+                sl_pct = 0.03
+            else:
+                sl_pct = 0.02
+            
+            stop_loss = price * (1 + sl_pct)
+            entry_price = price
+            
             risk = stop_loss - entry_price
-            tp1 = entry_price - risk * 1.0  # 1:1
-            tp2 = entry_price - risk * 2.0  # 1:2
-            tp3 = entry_price - risk * 3.0  # 1:3
-        
+            tp1 = entry_price - risk * 1
+            tp2 = entry_price - risk * 2
+            tp3 = entry_price - risk * 3
         else:
             stop_loss = 0
             tp1 = tp2 = tp3 = 0
         
         return entry_price, stop_loss, tp1, tp2, tp3
     
-    def _calculate_confidence(
-        self,
-        signal: str,
-        rsi: Optional[float],
-        crossover_age: Optional[int],
-        ob: Optional[OrderbookData],
-        secondary: dict
-    ) -> str:
-        """Calculate signal confidence level.
-        
-        Args:
-            signal: "LONG" or "SHORT"
-            rsi: Current RSI
-            crossover_age: Candles since crossover
-            ob: Orderbook data
-            secondary: Secondary timeframe data
+    def _calculate_position_size(self, entry_price: float, stop_loss: float) -> float:
+        """Calculate position size based on risk.
         
         Returns:
-            "Low", "Medium", or "High"
+            Position size in coin quantity
         """
-        score = 0
+        if entry_price <= 0 or stop_loss <= 0:
+            return 0.0
         
-        # RSI at extreme (oversold/overbought) = +1
-        if signal == "LONG" and rsi and rsi <= RSI_OVERSOLD:
-            score += 1
-        elif signal == "SHORT" and rsi and rsi >= RSI_OVERBOUGHT:
-            score += 1
+        risk_amount = self.capital * self.risk_pct
+        risk_per_unit = abs(entry_price - stop_loss)
         
-        # Fresh crossover (1 candle ago) = +1
-        if crossover_age == 1:
-            score += 1
-        elif crossover_age == 2:
-            score += 0.5
+        if risk_per_unit == 0:
+            return 0.0
         
-        # Orderbook confirms = +1
-        if ob and orderbook_confirms_signal(ob, signal):
-            score += 1
-        
-        # Secondary timeframe confirms = +1
-        if secondary:
-            sec_rsi = secondary.get("rsi")
-            if signal == "LONG" and sec_rsi and sec_rsi <= RSI_OVERSOLD_EXIT:
-                score += 1
-            elif signal == "SHORT" and sec_rsi and sec_rsi >= RSI_OVERBOUGHT_EXIT:
-                score += 1
-        
-        if score >= 3:
-            return CONFIDENCE_HIGH
-        elif score >= 2:
-            return CONFIDENCE_MEDIUM
-        else:
-            return CONFIDENCE_LOW
+        position_size = risk_amount / risk_per_unit
+        return position_size
     
     def _determine_trend_bias(
         self,
-        ema9: float,
-        ema21: float,
-        price: float
+        rsi_value: float,
+        daily_pos: float,
+        price_change_pct: float
     ) -> str:
-        """Determine trend bias from EMA relationship.
+        """Determine overall trend bias."""
+        bullish_signals = 0
+        bearish_signals = 0
         
-        Args:
-            ema9: Current EMA9
-            ema21: Current EMA21
-            price: Current price
+        # RSI
+        if rsi_value < 45:
+            bullish_signals += 1
+        elif rsi_value > 55:
+            bearish_signals += 1
         
-        Returns:
-            "bullish", "bearish", or "neutral"
-        """
-        if price > ema9 > ema21:
+        # Daily position
+        if daily_pos < 45:
+            bullish_signals += 1
+        elif daily_pos > 55:
+            bearish_signals += 1
+        
+        # Price momentum
+        if price_change_pct > 0.5:
+            bullish_signals += 1
+        elif price_change_pct < -0.5:
+            bearish_signals += 1
+        
+        if bullish_signals >= 2 and bearish_signals == 0:
             return "bullish"
-        elif price < ema9 < ema21:
+        elif bearish_signals >= 2 and bullish_signals == 0:
             return "bearish"
-        elif price > ema9:
-            return "bullish"
-        elif price < ema9:
-            return "bearish"
-        else:
-            return "neutral"
+        return "neutral"
     
     def _build_reason(
         self,
         signal: str,
-        rsi: Optional[float],
-        crossover_type: str,
-        crossover_age: Optional[int],
-        ob: Optional[OrderbookData],
-        confidence: str
+        rsi_value: float,
+        rsi_direction: str,
+        daily_pos: float,
+        imbalance: float,
+        price_change_pct: float,
+        confidence: str,
+        reasons: List[str]
     ) -> str:
-        """Build human-readable reason for the signal.
+        """Build human-readable reason string."""
+        base = f"{signal} signal ({confidence} confidence)"
         
-        Args:
-            signal: "LONG", "SHORT", or "NO TRADE SETUP"
-            rsi: Current RSI
-            crossover_type: "BULLISH", "BEARISH", or "NONE"
-            crossover_age: Candles since crossover
-            ob: Orderbook data
-            confidence: Signal confidence
+        details = []
+        details.append(f"RSI {rsi_value:.1f} ({rsi_direction})")
+        details.append(f"Daily pos {daily_pos:.1f}%")
+        details.append(f"Orderbook {imbalance:.2f}x")
         
-        Returns:
-            Human-readable reason string
-        """
-        reasons = []
-        
-        if signal == "LONG":
-            reasons.append("LONG setup")
-            if rsi:
-                if rsi <= RSI_OVERSOLD:
-                    reasons.append(f"RSI deeply oversold ({rsi:.1f})")
-                else:
-                    reasons.append(f"RSI exiting oversold ({rsi:.1f})")
-            reasons.append(f"EMA {crossover_type} crossover")
-            if crossover_age:
-                reasons.append(f"crossover {crossover_age} candle(s) ago")
-            if ob:
-                if ob.imbalance > 1.3:
-                    reasons.append(f"thick bids (imbalance: {ob.imbalance:.2f})")
-            reasons.append(f"{confidence} confidence")
-        
-        elif signal == "SHORT":
-            reasons.append("SHORT setup")
-            if rsi:
-                if rsi >= RSI_OVERBOUGHT:
-                    reasons.append(f"RSI deeply overbought ({rsi:.1f})")
-                else:
-                    reasons.append(f"RSI exiting overbought ({rsi:.1f})")
-            reasons.append(f"EMA {crossover_type} crossover")
-            if crossover_age:
-                reasons.append(f"crossover {crossover_age} candle(s) ago")
-            if ob:
-                if ob.imbalance < 0.7:
-                    reasons.append(f"thick asks (imbalance: {ob.imbalance:.2f})")
-            reasons.append(f"{confidence} confidence")
-        
-        else:
-            reasons.append("No trade setup - conditions not aligned")
-        
-        return "; ".join(reasons)
+        return f"{base} — {', '.join(details)}"
     
     def _no_signal(self, reason: str) -> TradingSignal:
-        """Create a no-signal result.
-        
-        Args:
-            reason: Why no signal
-        
-        Returns:
-            TradingSignal with NO TRADE SETUP
-        """
+        """Return a no-trade signal."""
         return TradingSignal(
             signal_type="NO TRADE SETUP",
             entry_price=0.0,
@@ -647,10 +565,9 @@ class StrategyV2:
             take_profit_2=0.0,
             take_profit_3=0.0,
             rsi_value=50.0,
-            ema_9=0.0,
-            ema_21=0.0,
+            daily_position=50.0,
             trend_bias="neutral",
-            signal_confidence="Low",
+            signal_confidence=CONF_LOW,
             reason=reason,
             orderbook_imbalance=1.0,
             risk_percent=self.risk_pct * 100,
@@ -658,56 +575,22 @@ class StrategyV2:
         )
 
 
-# ── Convenience functions ──
-
 def get_signal_v2(pair: str, capital: float = 0.0, risk_pct: float = 0.01) -> dict:
-    """Get trading signal for a pair using StrategyV2.
+    """Convenience function for CLI.
     
-    Args:
-        pair: Trading pair (e.g., 'doge', 'xrp')
-        capital: Available capital in IDR (uses default if not provided)
-        risk_pct: Risk percentage (default 1%)
-    
-    Returns:
-        Dict with signal data (compatible with output format)
+    Returns dict (JSON-serializable) instead of TradingSignal object.
     """
     strategy = StrategyV2(pair=pair, capital=capital, risk_pct=risk_pct)
     signal = strategy.analyze()
-    return signal.to_dict()
+    return {"pair": pair, "signal": signal.to_dict()}
 
 
 async def get_signal_v2_async(pair: str, capital: float = 0.0, risk_pct: float = 0.01) -> dict:
-    """Async version of get_signal_v2.
-    
-    Note: Most of the work is CPU-bound, so runs in thread pool.
-    """
-    import asyncio
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, get_signal_v2, pair, capital, risk_pct)
+    """Async convenience function for daemon."""
+    return get_signal_v2(pair, capital, risk_pct)
 
 
-def analyze_pair_v2(pair: str, capital: float = 0.0) -> dict:
-    """Analyze a pair and return complete analysis.
-    
-    Args:
-        pair: Trading pair
-        capital: Available capital
-    
-    Returns:
-        Dict with signal + orderbook + metadata
-    """
-    signal = get_signal_v2(pair, capital)
-    ob = get_orderbook(pair)
-    
-    return {
-        "pair": pair,
-        "signal": signal,
-        "orderbook": {
-            "imbalance": ob.imbalance if ob else 1.0,
-            "bid_volume": ob.bid_volume if ob else 0.0,
-            "ask_volume": ob.ask_volume if ob else 0.0,
-            "spread": ob.spread if ob else 0.0,
-            "thick_bid": ob.thick_bid_level if ob else None,
-            "thick_ask": ob.thick_ask_level if ob else None,
-        } if ob else None
-    }
+def analyze_pair_v2(pair: str, capital: float = 0.0) -> TradingSignal:
+    """Standalone analysis function for display/CLI."""
+    strategy = StrategyV2(pair=pair, capital=capital)
+    return strategy.analyze()
