@@ -30,7 +30,7 @@ def execute_buy(pair: str, price: float, idr_balance: float) -> bool:
         pair=f"{pair}_idr",
         type="buy",
         price=int(price),
-        idr=str(int(buy_amount_rp))
+        idr=int(buy_amount_rp),
     )
 
     if result.get("success") == 1:
@@ -60,6 +60,15 @@ def execute_buy(pair: str, price: float, idr_balance: float) -> bool:
 
 def execute_sell(pair: str, price: float, qty: float, reason: str = "") -> bool:
     """Execute a sell order."""
+    # Validate qty won't fail due to being too small
+    idr_value = qty * price
+    if idr_value < 10000:
+        log.warning(f"SELL SKIPPED: Rp value ({idr_value:,.0f}) below minimum Rp 10,000")
+        return False
+    if qty <= 0:
+        log.warning(f"SELL SKIPPED: qty ({qty}) is zero or negative")
+        return False
+
     log.info(f"SELL order ({reason}): {format_coin(qty, pair)} @ Rp {price:,.0f}")
 
     sell_params = {

@@ -100,7 +100,7 @@ def main():
             to_json({"error": "no_price"})
             return
         if idr < 10000:
-            to_json({"error": "insufficient_balance"})
+            to_json({"error": "below_minimum_trade", "message": f"IDR balance ({idr}) below minimum trade size (Rp 10,000)"})
             return
         success = execute_buy(args.pair, price, idr)
         to_json({"success": success})
@@ -110,7 +110,12 @@ def main():
         if not price:
             to_json({"error": "no_price"})
             return
-        success = execute_sell(args.pair, price, args.qty, reason="cli_manual")
+        qty = args.qty
+        idr_value = qty * price
+        if idr_value < 10000:
+            to_json({"error": "below_minimum_trade", "message": f"Sell order value (Rp {idr_value:,.0f}) below minimum (Rp 10,000)"})
+            return
+        success = execute_sell(args.pair, price, qty, reason="cli_manual")
         to_json({"success": success})
         
     elif args.command == "fear-greed":
