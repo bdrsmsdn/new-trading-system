@@ -130,7 +130,7 @@ def main():
         # Use WS-based init, not REST burst
         from hermes.api.rest import fetch_all_prices
         fetch_all_prices()
-        rankings = rank_all_pairs()
+        rankings = asyncio.run(rank_all_pairs())
         result = [{"pair": p, "score": s, "signal": sig, "daily_pos": dp} for p, s, sig, dp in rankings]
         budget = get_rest_budget_status()
         to_json({"rankings": result, "rest_budget": budget})
