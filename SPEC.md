@@ -82,6 +82,48 @@ python3 hermes_trader.py --analyze   # Analysis only, no trading
 - **Kelly Criterion:** Used for dynamic sizing (capped 10%)
 - **Cooldown:** 60 seconds per pair between trades
 
+### Strategy V2 (RSI + EMA + Orderbook) ⚡ NEW
+> Professional-grade strategy combining RSI, EMA crossover, and orderbook analysis.
+
+**Indicators:**
+| Indicator | Parameter | Purpose |
+|-----------|-----------|---------|
+| RSI | Period 14 | Overbought/oversold detection |
+| EMA | 9, 21 | Trend direction + crossover |
+| Orderbook | Bid/Ask depth | Support/resistance strength |
+
+**LONG Setup (all must be true):**
+1. RSI ≤ 30 (oversold) OR RSI exiting oversold zone
+2. EMA 9 crosses ABOVE EMA 21 (bullish crossover)
+3. Price closes above both EMA 9 and EMA 21
+4. RSI moving upward (confirming momentum)
+5. Orderbook: bid volume > ask volume (bullish pressure)
+
+**SHORT Setup (all must be true):**
+1. RSI ≥ 70 (overbought) OR RSI exiting overbought zone
+2. EMA 9 crosses BELOW EMA 21 (bearish crossover)
+3. Price closes below both EMA 9 and EMA 21
+4. RSI moving downward (confirming momentum)
+5. Orderbook: ask volume > bid volume (bearish pressure)
+
+**Signal Filters:**
+- Avoid signals during extremely low volatility
+- Ignore signals if EMA crossover happened > 3 candles ago
+- Only produce signals when RSI + EMA conditions align
+
+**Risk Management:**
+- Risk per trade: 1-2% of capital (configurable via `--risk`)
+- Stop Loss: below recent swing low (LONG) / above recent swing high (SHORT)
+- Take Profit: TP1 = 1:1 R:R, TP2 = 1:2 R:R, TP3 = 1:3 R:R
+
+**Orderbook Imbalance:**
+- `imbalance = bid_vol / ask_vol`
+- > 1.0 = bullish pressure (buyers aggressive)
+- < 1.0 = bearish pressure (sellers aggressive)
+- Combined with LONG/SHORT signal for confidence boost
+
+**Output:**
+
 ---
 
 ## 5. Market Regime System

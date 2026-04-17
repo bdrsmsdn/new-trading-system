@@ -15,13 +15,37 @@ All outputs are **JSON to stdout**. Logs go to stderr/files.
 | `get-price <pair>` | Get live price for a pair | `python -m hermes.cli get-price doge` |
 | `market-regime` | Get current regime (BULL/BEAR/SIDEWAYS) | `python -m hermes.cli market-regime` |
 
-### Analysis
+### Analysis (Legacy Strategy)
 | Command | Description | Example |
 |---------|-------------|---------|
 | `get-signal <pair>` | Get signal + score for a pair | `python -m hermes.cli get-signal doge` |
 | `rank-pairs` | Rank all 30 pairs by signal score | `python -m hermes.cli rank-pairs` |
 | `analyze --pair <pair>` | Full analysis of one pair | `python -m hermes.cli analyze --pair doge` |
 | `analyze --all` | Full analysis of all pairs | `python -m hermes.cli analyze --all` |
+
+### Analysis V2 (RSI + EMA + Orderbook)
+> **Professional-grade strategy** using RSI(14), EMA(9/21) crossover, and orderbook analysis.
+> Recommended over legacy strategy for better signal quality.
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `signal-v2 --pair <pair>` | V2 signal for one pair | `python -m hermes.cli signal-v2 --pair doge` |
+| `signal-v2 --all` | V2 signal for all pairs | `python -m hermes.cli signal-v2 --all` |
+| `signal-v2 --pair <pair> --risk 0.02` | Custom risk % (default: 1%) | `python -m hermes.cli signal-v2 --pair doge --risk 0.02` |
+
+**V2 Signal Interpretation:**
+- **LONG**: All conditions met — RSI ≤30 OR exiting oversold + EMA9 crosses above EMA21 + price above both EMAs
+- **SHORT**: All conditions met — RSI ≥70 OR exiting overbought + EMA9 crosses below EMA21 + price below both EMAs
+- **NO TRADE SETUP**: Conditions not aligned
+
+**V2 Output Fields:**
+- `signal_type`: LONG / SHORT / NO TRADE SETUP
+- `entry_price`, `stop_loss`, `take_profit_1/2/3`
+- `rsi_value`, `ema_9`, `ema_21`, `trend_bias`
+- `signal_confidence`: Low / Medium / High
+- `orderbook_imbalance`: bid_vol/ask_vol ratio (>1 = bullish pressure, <1 = bearish)
+- `risk_percent`, `position_size`
+- `reason`: Explanation of why signal is valid
 
 ### Portfolio
 | Command | Description | Example |

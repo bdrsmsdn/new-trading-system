@@ -26,7 +26,7 @@ def get_nonce() -> int:
         else:
             current = 0
 
-        ms = int(time.time() * 1000)
+        ms = int(time.time() * 1000000)  # microseconds (16 digits)
         new_nonce = max(ms, current + 1, _last_nonce + 1)
         _last_nonce = new_nonce
 
@@ -35,7 +35,7 @@ def get_nonce() -> int:
         return new_nonce
     except Exception as e:
         log.error(f"Nonce error: {e}")
-        fallback = max(int(time.time() * 1000), _last_nonce + 1)
+        fallback = max(int(time.time() * 1000000), _last_nonce + 1)
         _last_nonce = fallback  # persist in memory so next call cannot reuse it
         return fallback
 
