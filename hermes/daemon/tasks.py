@@ -14,6 +14,7 @@ from hermes.api.websocket import ws_client
 from hermes.indicators.signals import get_daily_position, get_signal, get_market_regime, get_regime_trading_config
 from hermes.indicators.rsi import get_rsi, get_multi_rsi_async
 from hermes.indicators.fear_greed import fetch_fear_greed
+from hermes.indicators.strategy_new import get_signal_v2_async, StrategyV2
 from hermes.trading.positions import check_open_positions
 from hermes.trading.execution import execute_buy
 
@@ -127,7 +128,10 @@ async def daemon_pair_reassess():
             log.error(f"[PAIR-REASSESS] Error: {e}")
 
 async def daemon_trade_check(get_balance_func):
-    """Periodically check for trade opportunities. Uses cached/WS data primarily."""
+    """Periodically check for trade opportunities. Uses cached/WS data primarily.
+    
+    This uses the original F&G+RSI strategy. For Strategy V2, use daemon_trade_check_v2().
+    """
     while True:
         await asyncio.sleep(DAEMON_TRADE_CHECK_INTERVAL)
         try:
@@ -176,6 +180,78 @@ async def daemon_trade_check(get_balance_func):
             state.save()
         except Exception as e:
             log.error(f"Trade check error: {e}")
+
+
+async def daemon_trade_check_v2(get_balance_func, min_confidence: str = "Medium"):
+    """Periodically check for trade opportunities using Strategy V2.
+    
+    Strategy V2 uses RSI + EMA crossover + Orderbook analysis.
+    Requires candle data so uses more REST budget than the original strategy.
+    
+    Args:
+        get_balance_func: Function to get balance
+        min_confidence: Minimum signal confidence to execute ("Low", "Medium", "High")
+    """
+    from hermes.api.orderbook import get_orderbook_async
+    from hermes.config import TRADE_COOLDOWN
+    
+    confidence_order = {"Low": 0, "Medium": 1, "High": 2}
+    min_conf_level = confidence_order.get(min_confidence, 1)
+    
+    while True:
+        await asyncio.sleep(DAEMON_TRADE_CHECK_INTERVAL)
+        try:
+            balance = get_balance_func(use_cache=True)
+            idr = balance.get("idr", 0)
+            
+            if idr < MIN_TRADE_RP and not state.positions:
+                continue
+            
+            # Check positions using WS prices (no REST)
+            for pair in list(state.positions.keys()):
+                if pair in prices:
+                    check_open_positions(prices[pair]["price"], balance)
+            
+            # Only look for entries when F&G is favorable
+            if state.fg_value <= FG_BUY_THRESHOLD:
+                for pair in state.active_pairs:
+                    if pair not in prices:
+                        continue
+                    if pair in state.positions:
+                        continue
+                    
+                    if state.last_trade_time.get(pair, 0) > time.time() - TRADE_COOLDOWN:
+                        continue
+                    
+                    price = prices[pair]["price"]
+                    
+                    # Run Strategy V2 analysis
+                    signal_data = await get_signal_v2_async(pair, capital=idr, risk_pct=0.01)
+                    signal_type = signal_data.get("signal_type", "NO TRADE SETUP")
+                    confidence = signal_data.get("signal_confidence", "Low")
+                    conf_level = confidence_order.get(confidence, 0)
+                    
+                    # Only execute if signal and confidence meet threshold
+                    if signal_type == "LONG" and conf_level >= min_conf_level:
+                        if idr >= MIN_TRADE_RP:
+                            log.info(f"[V2-TRADE] {pair.upper()}: LONG signal ({confidence}) at Rp {price:,.0f}")
+                            log.info(f"         RSI: {signal_data.get('rsi_value', 0):.1f} | EMA9: {signal_data.get('ema_9', 0):.4f} | EMA21: {signal_data.get('ema_21', 0):.4f}")
+                            log.info(f"         SL: {signal_data.get('stop_loss', 0):,.0f} | TP3: {signal_data.get('take_profit_3', 0):,.0f}")
+                            log.info(f"         Orderbook imbalance: {signal_data.get('orderbook_imbalance', 1.0):.2f}")
+                            
+                            live_balance = get_balance_func(use_cache=False)
+                            idr = live_balance.get("idr", 0)
+                            if idr >= MIN_TRADE_RP and execute_buy(pair, price, idr):
+                                idr -= MAX_TRADE_RP
+                    
+                    elif signal_type == "SHORT" and conf_level >= min_conf_level:
+                        # For shorts, we need to have the asset first
+                        # This would be implemented with sell logic
+                        log.info(f"[V2-TRADE] {pair.upper()}: SHORT signal ({confidence}) - not implemented in auto-trader")
+            
+            state.save()
+        except Exception as e:
+            log.error(f"V2 Trade check error: {e}")
 
 async def daemon_fg_fetch():
     """Periodically fetch Fear & Greed."""

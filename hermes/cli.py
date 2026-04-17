@@ -7,7 +7,8 @@ from hermes.api.rest import fetch_price_rest, get_rest_budget_status
 from hermes.indicators.fear_greed import fetch_fear_greed
 from hermes.indicators.signals import get_signal, get_market_regime
 from hermes.indicators.rsi import get_multi_rsi
-from hermes.display.analysis import print_analysis
+from hermes.indicators.strategy_new import get_signal_v2, StrategyV2
+from hermes.display.analysis import print_analysis, print_analysis_v2
 from hermes.display.dashboard import print_portfolio_dashboard
 from hermes.trading.positions import check_open_positions
 from hermes.trading.execution import execute_buy, execute_sell
@@ -32,6 +33,11 @@ def main():
     p = sub.add_parser("analyze", help="Run analysis")
     p.add_argument("--pair", default=None)
     p.add_argument("--all", action="store_true")
+    
+    p = sub.add_parser("signal-v2", help="Run Strategy V2 (RSI+EMA+Orderbook) analysis")
+    p.add_argument("--pair", default=None, help="Specific pair to analyze")
+    p.add_argument("--all", action="store_true", help="Analyze all pairs")
+    p.add_argument("--risk", type=float, default=0.01, help="Risk percent (default: 0.01 = 1%%)")
     
     sub.add_parser("check-positions", help="Check TP/SL on open positions")
     
@@ -80,6 +86,22 @@ def main():
             to_json({"analyses": analyses})
         else:
             to_json({"error": "Specify --pair X or --all"})
+            
+    elif args.command == "signal-v2":
+        # Strategy V2: RSI + EMA + Orderbook analysis
+        balance = get_balance(use_cache=True)
+        capital = balance.get("idr", 10_000)
+        
+        if args.pair:
+            # Single pair analysis
+            signal = get_signal_v2(args.pair, capital=capital, risk_pct=args.risk)
+            to_json({"pair": args.pair, "signal": signal})
+        elif args.all:
+            # Analyze all pairs using display function
+            results = print_analysis_v2(get_balance)
+            to_json({"results": results})
+        else:
+            to_json({"error": "Specify --pair X or --all for signal-v2"})
             
     elif args.command == "check-positions":
         # Use WS prices, not REST
