@@ -14,6 +14,36 @@ CANDLE_TTL: Dict[str, int] = {
     "15m": 600, "5m": 120, "3m": 120, "1m": 60,
 }
 
+# Indodax TradingView history_v2 endpoint interval mappings
+_TF_MAP: Dict[str, str] = {
+    "1m": "1", "3m": "1", "5m": "1", "15m": "15",
+    "30m": "30", "1h": "60", "4h": "240",
+    "1d": "1D", "1w": "1W",
+}
+_INTERVAL_SECONDS: Dict[str, int] = {
+    "1": 60, "15": 900, "30": 1800, "60": 3600,
+    "240": 14400, "1D": 86400, "1W": 604800,
+}
+
+def _build_candles_url(pair: str, interval: str, limit: int) -> str:
+    """Build Indodax TradingView history_v2 URL for candles."""
+    tf = _TF_MAP.get(interval, "60")
+    now_ts = int(time.time())
+    from_ts = now_ts - (_INTERVAL_SECONDS.get(tf, 3600) * limit)
+    from_ts = max(from_ts, 946684801)  # must be > 2000-01-01
+    return f"https://indodax.com/tradingview/history_v2?symbol={pair}idr&tf={tf}&from={from_ts}&to={now_ts}"
+
+def _parse_candles(data) -> List[List[float]]:
+    """Parse TradingView history_v2 response into [[ts, o, h, l, c, v]] format."""
+    if not isinstance(data, list):
+        return []
+    result = []
+    for c in data:
+        if isinstance(c, dict) and "Time" in c:
+            result.append([float(c["Time"]), float(c["Open"]), float(c["High"]),
+                           float(c["Low"]), float(c["Close"]), float(c.get("Volume", 0))])
+    return result
+
 _PUBLIC_REST_MIN_INTERVAL = 1.5  # Conservative per-request interval
 _last_public_rest_call = 0.0
 _global_rate_limit_until = 0.0
@@ -231,16 +261,14 @@ def fetch_candles(pair: str, interval: str = "1h", limit: int = 100) -> Optional
     if not _check_budget():
         return cached["candles"] if cached else None
 
-    body = _throttled_public_get(
-        f"https://indodax.com/api/klines/{pair}idr?interval={interval}&limit={limit}"
-    )
+    body = _throttled_public_get(_build_candles_url(pair, interval, limit))
     if body is None:
         return cached["candles"] if cached else None
 
     try:
         data = json.loads(body)
-        if data.get("success") == 1:
-            candles = data.get("klines", [])
+        candles = _parse_candles(data)
+        if candles:
             _candle_cache[cache_key] = {"candles": candles, "ts": time.time()}
             return candles
         return cached["candles"] if cached else None
@@ -259,16 +287,14 @@ async def fetch_candles_async(pair: str, interval: str = "1h", limit: int = 100)
     if not _check_budget():
         return cached["candles"] if cached else None
 
-    body = await _async_throttled_public_get(
-        f"https://indodax.com/api/klines/{pair}idr?interval={interval}&limit={limit}"
-    )
+    body = await _async_throttled_public_get(_build_candles_url(pair, interval, limit))
     if body is None:
         return cached["candles"] if cached else None
 
     try:
         data = json.loads(body)
-        if data.get("success") == 1:
-            candles = data.get("klines", [])
+        candles = _parse_candles(data)
+        if candles:
             _candle_cache[cache_key] = {"candles": candles, "ts": time.time()}
             return candles
         return cached["candles"] if cached else None

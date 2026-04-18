@@ -307,12 +307,23 @@ async def run_daemon(get_balance_func):
     fetch_fear_greed()
     log.info(f"Fear & Greed: {state.fg_value} ({state.fg_class})")
     
+    # Clear stale RSI cache and state from previous run
+    _multi_rsi_cache.clear()
+    for pair in state.rsi_state:
+        state.rsi_state[pair] = {"avg_gain": 0, "avg_loss": 0, "last_price": 0, "initialized": False}
+
     # Start WS FIRST and wait for prices to populate
     log.info("Starting WebSocket feed for price initialization (wait 8s)...")
     ws_task = asyncio.create_task(ws_client.run_forever())
     await asyncio.sleep(8)
     log.info(f"WS parallel fill complete. Prices loaded for {len(prices)} pairs.")
-    
+
+    # Seed RSI state from WS prices so it's initialized before trade checks start
+    from hermes.indicators.rsi import update_rsi
+    for pair, data in prices.items():
+        if data.get("source") in ("ws", "ws_summary", "ws_orderbook"):
+            update_rsi(pair, data["price"])
+
     if not state.active_pairs:
         state.active_pairs, _ = await update_active_pairs()
         state.save()
