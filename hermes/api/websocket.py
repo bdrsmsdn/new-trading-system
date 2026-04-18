@@ -2,11 +2,27 @@ import json
 import time
 import asyncio
 import websockets
+from pathlib import Path
 from hermes.logging_setup import log
 from hermes.state import prices
 
-# Binance WebSocket URL (combined streams)
-BINANCE_WS_URL = "wss://stream.binance.com:9443/stream"
+# Load TESTNET flag from .env at project root
+_env = {}
+try:
+    env_file = Path(__file__).parent.parent.parent / ".env"
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith('#') and '=' in line:
+            k, _, v = line.partition('=')
+            _env[k.strip()] = v.strip().strip("'\"")
+except Exception:
+    pass
+
+_testnet = _env.get("TESTNET", "false").lower() == "true"
+# Binance WebSocket URL (combined streams) - use testnet if enabled
+# Mainnet: wss://stream.binance.com:9443/stream
+# Testnet: wss://stream.testnet.binance.vision/stream
+BINANCE_WS_URL = "wss://stream.testnet.binance.vision/stream" if _testnet else "wss://stream.binance.com:9443/stream"
 
 # Format pairs for Binance WS: DOGE -> dogeusdt
 def _pair_to_ws_symbol(pair: str) -> str:
@@ -33,20 +49,22 @@ class BinanceWS:
     """Binance WebSocket client for real-time price feeds using Combined Streams."""
 
     def __init__(self, pairs=None, on_price=None):
-        self.pairs = pairs or [_pair_to_ws_symbol(p) for p in
-                               ["DOGE", "XRP", "TON", "SOL", "BTC", "ETH", "BNB",
-                                "PEPE", "SHIB", "ADA", "MATIC", "LINK", "AVAX",
-                                "DOT", "BONK", "NEAR", "ALGO", "TRX"]]
+        # Use provided pairs, or ALL_TRACKED from config (supports dynamic modification)
+        from hermes.config import ALL_TRACKED as _tracked
+        self.pairs = pairs or [_pair_to_ws_symbol(p) for p in _tracked]
         self.on_price = on_price  # callback(pair, price_data)
         self.ws = None
         self.connected = False
         self.loop = None
         self.recv_task = None
         self.reconnect_delay = 5
+        self._extra_pairs = set()  # dynamically added pairs
 
     async def connect(self):
-        # Build combined streams URL
-        streams = "/".join(self.pairs)
+        # Build combined streams URL with @ticker suffix for each stream
+        # Include both default pairs and dynamically added pairs
+        all_pairs = list(self.pairs) + [p for p in self._extra_pairs if p not in self.pairs]
+        streams = "/".join([f"{p}@ticker" for p in all_pairs])
         ws_url = f"{BINANCE_WS_URL}?streams={streams}"
 
         self.ws = await websockets.connect(ws_url)
@@ -140,6 +158,34 @@ class BinanceWS:
             await asyncio.sleep(self.reconnect_delay)
             self.reconnect_delay = min(self.reconnect_delay * 2, 60)
 
+    def add_pair(self, pair: str) -> bool:
+        """Add a pair to the WebSocket subscription dynamically.
+        Returns True if added, False if already subscribed or WS not connected."""
+        pair = pair.upper().replace("USDT", "")
+        if pair in self.pairs or pair in self._extra_pairs:
+            return False  # already subscribed
+
+        self._extra_pairs.add(pair)
+        ws_symbol = _pair_to_ws_symbol(pair)
+
+        # If connected, need to reconnect to add the new pair
+        if self.connected and self.ws:
+            log.info(f"[WS] Adding new pair {pair} to subscription (will reconnect)...")
+            # Close and let run_forever reconnect with new pairs
+            self.connected = False
+            try:
+                if self.loop:
+                    self.loop.create_task(self.ws.close())
+            except:
+                pass
+            return True
+
+        return True
+
+    def get_subscribed_pairs(self) -> list:
+        """Return list of currently subscribed pairs."""
+        return list(self.pairs) + list(self._extra_pairs)
+
     def close(self):
         self.connected = False
         if self.ws:
@@ -151,3 +197,24 @@ class BinanceWS:
 
 # Backward compatibility alias
 ws_client = BinanceWS(on_price=_ws_price_update)
+
+def ws_add_pair(pair: str) -> dict:
+    """Add a pair to the WebSocket subscription dynamically.
+    Agent can call this to add new pairs without restart.
+
+    Args:
+        pair: e.g. 'DOGE', 'DOGEUSDT', 'bitcoin'
+
+    Returns:
+        {"success": True/False, "subscribed": [...], "reason": ""}
+    """
+    result = ws_client.add_pair(pair)
+    return {
+        "success": result,
+        "subscribed": ws_client.get_subscribed_pairs(),
+        "reason": "Already subscribed" if not result else "Pair added, reconnecting..."
+    }
+
+def ws_get_pairs() -> list:
+    """Get list of currently subscribed pairs."""
+    return ws_client.get_subscribed_pairs()

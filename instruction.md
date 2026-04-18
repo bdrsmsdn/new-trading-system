@@ -12,9 +12,12 @@ Hermes is an autonomous crypto trading system for Binance. It runs as a daemon t
 ### Starting the System
 ```bash
 cd C:/BADRA/new-trading-system
-PYTHONIOENCODING=utf-8 python -X utf8 -m hermes.cli daemon    # Full daemon (trading + AI)
-PYTHONIOENCODING=utf-8 python -X utf8 -m hermes.cli agent      # Telegram AI agent only (no trading)
-python -m hermes.cli rank-pairs                                 # CLI: rank all pairs
+PYTHONPATH=. python hermes/cli.py daemon [--dry-run]  # Full daemon
+PYTHONPATH=. python hermes/cli.py one-shot [--dry-run] # Single trading cycle
+PYTHONPATH=. python hermes/cli.py agent                 # Telegram AI agent only
+PYTHONPATH=. python hermes/cli.py rank-pairs            # CLI: rank all pairs
+PYTHONPATH=. python hermes/cli.py get-balance            # Check balance
+PYTHONPATH=. python hermes/cli.py get-price <PAIR>      # Get price
 ```
 
 ### Key Files
@@ -129,7 +132,7 @@ Trade outcomes are tracked:
 
 ## Config Values (from `config.py`)
 ```
-MIN_TRADE_USDT = 10          # Minimum trade in USDT
+MIN_TRADE_USDT = 1           # Minimum trade in USDT
 MAX_TRADE_USDT = 100         # Max per trade
 STOP_LOSS_PCT = 0.05         # 5% stop loss
 TAKE_PROFIT_PCT = 0.10       # 10% take profit
@@ -139,6 +142,7 @@ FG_BUY_THRESHOLD = 30        # F&G <= 30 → buy zone
 RSI_BUY_THRESHOLD = 35
 RSI_STRONG_BUY = 30
 RSI_SELL_THRESHOLD = 65
+TESTNET = false              # Set true in .env to use Binance Testnet
 ```
 
 ---
@@ -199,3 +203,55 @@ The agent should use `--dry-run` flag when instructed to test or verify trading 
 - Testing new strategies
 - Verifying Telegram alerts work
 - Checking system behavior without real money at risk
+
+---
+
+## Telegram Bot Commands
+
+When running the bot (`python hermes/cli.py agent`), available commands:
+
+| Command | Description |
+|---------|-------------|
+| `/start` | Welcome message & capabilities |
+| `/status` | Quick portfolio summary (positions, balance, PnL) |
+| `/learn` | Self-learning review of past trades |
+| `/strategies` | View learned strategies |
+| `/reset` | Reset conversation context |
+| *(free text)* | Chat with AI agent (MiniMax M2.7) |
+
+The agent can also execute trades, check prices, analyze performance via natural language.
+
+---
+
+## IDR to USDT Workflow
+
+Hermes trades on **Binance spot market** using **USDT pairs** (DOGEUSDT, BTCUSDT, etc.).
+
+**To add IDR balance:**
+
+1. **Buy USDT with IDR** via Binance P2P:
+   - Go to Binance → P2P Trading
+   - Buy USDT using IDR bank transfer
+   - This deposits USDT to your Binance spot wallet
+
+2. **No pair changes needed** — Hermes automatically uses USDT pairs
+
+3. **Important**: `PAIR` in `.env` is only for CLI default, NOT for daemon trading. Daemon uses `ALL_TRACKED` pairs from config.
+
+---
+
+## Dynamic Pair Addition
+
+The agent can add pairs dynamically without restart:
+
+```python
+from hermes.api.websocket import ws_add_pair, ws_get_pairs
+
+# Add a new pair to WS subscription
+result = ws_add_pair('NEWP AIR')
+
+# Get current subscribed pairs
+pairs = ws_get_pairs()
+```
+
+This reconnects the WebSocket to include the new pair. Useful when the agent is instructed to track a new coin.

@@ -3,6 +3,7 @@ import requests
 from datetime import datetime
 from hermes.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from hermes.state import state, prices
+from hermes.logging_setup import log
 
 _telegram_enabled = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 _telegram_last_send = 0.0

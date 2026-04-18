@@ -2,6 +2,7 @@ import argparse
 import json
 import sys
 import asyncio
+from hermes.logging_setup import log
 from hermes.api.balance import get_balance
 from hermes.api.rest import fetch_price_rest, get_rest_budget_status
 from hermes.indicators.fear_greed import fetch_fear_greed
@@ -57,6 +58,7 @@ def main():
     sub.add_parser("state", help="Show current state")
     daemon_parser = sub.add_parser("daemon", help="Run autonomous daemon")
     daemon_parser.add_argument("--dry-run", action="store_true", help="Simulate trading without real orders")
+    daemon_parser.add_argument("--with-agent", action="store_true", help="Also start Telegram AI agent in same process")
 
     one_shot_parser = sub.add_parser("one-shot", help="Run single trading iteration")
     one_shot_parser.add_argument("--dry-run", action="store_true", help="Simulate trading without real orders")
@@ -193,7 +195,19 @@ def main():
             state.dry_run = getattr(args, 'dry_run', False)
             if state.dry_run:
                 log.info("DRY_RUN MODE — No real orders will be executed")
-            asyncio.run(run_daemon(get_balance, dry_run=state.dry_run))
+
+            with_agent = getattr(args, 'with_agent', False)
+
+            if with_agent:
+                # Run both daemon and agent together
+                async def run_with_agent():
+                    from hermes.agent.bot import run_telegram_bot
+                    daemon_coro = run_daemon(get_balance, dry_run=state.dry_run)
+                    agent_coro = run_telegram_bot()
+                    await asyncio.gather(daemon_coro, agent_coro)
+                asyncio.run(run_with_agent())
+            else:
+                asyncio.run(run_daemon(get_balance, dry_run=state.dry_run))
         finally:
             if PID_FILE.exists():
                 PID_FILE.unlink()

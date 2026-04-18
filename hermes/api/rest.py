@@ -7,6 +7,7 @@ from typing import Optional, List, Dict
 from hermes.logging_setup import log, tracker
 from hermes.state import prices, _ticker_cache, _candle_cache
 from hermes.config import ALL_TRACKED
+from hermes.api import auth as _auth
 
 # TTL per candle interval (seconds) — increased to reduce refetch frequency
 CANDLE_TTL: Dict[str, int] = {
@@ -29,7 +30,7 @@ _INTERVAL_SECONDS: Dict[str, int] = {
 def _build_candles_url(pair: str, interval: str, limit: int) -> str:
     """Build Binance klines URL for candles."""
     tf = _TF_MAP.get(interval, "1h")
-    return f"https://api.binance.com/api/v3/klines?symbol={pair.upper()}USDT&interval={tf}&limit={limit}"
+    return f"{_auth.BINANCE_API_BASE}/api/v3/klines?symbol={pair.upper()}USDT&interval={tf}&limit={limit}"
 
 def _parse_candles(data) -> List[List[float]]:
     """Parse Binance klines response into [[ts, o, h, l, c, v]] format."""
@@ -182,7 +183,7 @@ def fetch_price_rest(pair: str) -> Optional[float]:
         return cached.get("price") if cached.get("price") else None
 
     # Binance format: {"symbol": "DOGEUSDT", "price": "0.12345000"}
-    body = _throttled_public_get(f"https://api.binance.com/api/v3/ticker/price?symbol={pair.upper()}USDT")
+    body = _throttled_public_get(f"{_auth.BINANCE_API_BASE}/api/v3/ticker/price?symbol={pair.upper()}USDT")
     if body is None:
         return cached.get("price") if cached.get("price") else None
     try:
@@ -225,7 +226,7 @@ def fetch_ticker_full(pair: str) -> Optional[dict]:
         return None
 
     # Binance 24hr ticker: {"lastPrice": "0.1234", "highPrice": "0.1300", "lowPrice": "0.1200", "volume": "1000000", "quoteVolume": "10000"}
-    body = _throttled_public_get(f"https://api.binance.com/api/v3/ticker/24hr?symbol={pair.upper()}USDT")
+    body = _throttled_public_get(f"{_auth.BINANCE_API_BASE}/api/v3/ticker/24hr?symbol={pair.upper()}USDT")
     if body is None:
         return None
     try:
@@ -311,21 +312,28 @@ def update_price(pair: str, price: float, source: str = "rest") -> None:
         pass
 
 def fetch_all_prices() -> None:
-    """Fetch prices relying on WS only. No REST fallback."""
+    """Fetch prices via WS first, fallback to REST if WS fails."""
     import asyncio
     from hermes.api.websocket import ws_client
 
     log.info("Initializing prices using WebSocket feed (approx 8s)...")
 
+    ws_success = False
+
     async def _fill_ws():
-        await ws_client.connect()
-        listen_task = asyncio.create_task(ws_client.listen())
-        await asyncio.sleep(6)
-        ws_client.close()
+        nonlocal ws_success
         try:
-            await listen_task
-        except Exception:
-            pass
+            await ws_client.connect()
+            listen_task = asyncio.create_task(ws_client.listen())
+            await asyncio.sleep(6)
+            ws_client.close()
+            try:
+                await listen_task
+            except Exception:
+                pass
+            ws_success = len(prices) > 0
+        except Exception as e:
+            log.warning(f"WebSocket connection failed: {e}. Will use REST fallback.")
 
     try:
         loop = asyncio.get_event_loop()
@@ -336,11 +344,20 @@ def fetch_all_prices() -> None:
     except RuntimeError:
         asyncio.run(_fill_ws())
 
-    fetched = len(prices)
-    missing = [p for p in ALL_TRACKED if p not in prices]
+    # If WS didn't get prices, use REST fallback for top pairs
+    if not ws_success or len(prices) < 5:
+        log.info("WS did not populate prices. Using REST fallback for priority pairs...")
+        for pair in ["BTC", "ETH", "DOGE", "XRP", "SOL", "TON"]:
+            price = fetch_price_rest(pair)
+            if price:
+                from hermes.state import prices as _prices
+                _prices[pair] = {"price": price, "updated": time.time(), "source": "rest"}
 
-    if missing:
-        log.info(f"Missing {len(missing)} pairs from WS. No REST fallback to avoid rate limits.")
+    fetched = len(prices)
+    missing = [p for p in ALL_TRACKED if p not in prices or not prices[p].get("price")]
+
+    if missing and len(prices) < 10:
+        log.info(f"Missing {len(missing)} pairs from price feed.")
 
     log.info(f"Price initialization complete. {fetched} pairs ready.")
 

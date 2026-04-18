@@ -129,7 +129,7 @@ async def daemon_pair_reassess():
             if regime != state._last_regime:
                 cfg = get_regime_trading_config()
                 from hermes.notifications.telegram import telegram_regime_alert
-                telegram_regime_alert(regime, state.fg_value, cfg["max_active"], cfg["position_size_multiplier"])
+                telegram_regime_alert(regime, state.fg_value, cfg["max_active_multiplier"], cfg["position_size_mult"])
                 state._last_regime = regime
 
             log.info(f"[PAIR-RANK] Top 5: " + " | ".join(

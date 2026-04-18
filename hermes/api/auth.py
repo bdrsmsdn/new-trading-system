@@ -4,13 +4,13 @@ import hmac
 import hashlib
 import subprocess
 import inspect
+from pathlib import Path
 from hermes.logging_setup import log, tracker
 
-# Load from .env
+# Load from .env at project root (hermes/api/auth.py -> 3 levels up to project root)
 _env = {}
 try:
-    from pathlib import Path
-    env_file = Path(__file__).parent.parent / ".env"
+    env_file = Path(__file__).parent.parent.parent / ".env"
     for line in env_file.read_text().splitlines():
         line = line.strip()
         if line and not line.startswith('#') and '=' in line:
@@ -22,7 +22,11 @@ except Exception:
 API_KEY = _env.get("API_KEY", "")
 API_SECRET = _env.get("API_SECRET", "")
 
-BINANCE_API_BASE = "https://api.binance.com"
+# Use testnet if TESTNET=true in .env
+_testnet = _env.get("TESTNET", "false").lower() == "true"
+# Testnet base URL does NOT include /api (endpoints start with /api/v3)
+# Mainnet base URL also does NOT include /api
+BINANCE_API_BASE = "https://testnet.binance.vision" if _testnet else "https://api.binance.com"
 BINANCE_SIGNED_ENDPOINTS = ["/api/v3/order", "/api/v3/account"]  # endpoints requiring signature
 
 def get_server_time() -> int:
@@ -30,7 +34,7 @@ def get_server_time() -> int:
     try:
         result = subprocess.run(
             ["curl", "-s", f"{BINANCE_API_BASE}/api/v3/time"],
-            capture_output=True, text=True, timeout=10
+            capture_output=True, encoding='utf-8', errors='replace', timeout=10
         )
         data = json.loads(result.stdout)
         return int(data["serverTime"])
@@ -96,12 +100,15 @@ def binance_signed_request(endpoint: str, params: dict = None, method: str = "PO
             if body:
                 cmd += ["-d", body]
 
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            result = subprocess.run(cmd, capture_output=True, encoding='utf-8', errors='replace', timeout=15)
             latency = (time.time() - start_time) * 1000
 
-            parts = result.stdout.rsplit("\n", 1)
-            http_status = parts[1].strip() if len(parts) == 2 else "200"
-            body_response = parts[0] if len(parts) == 2 else result.stdout
+            body_response = result.stdout if result.stdout else ""
+            http_status = "200"
+            if "\n" in body_response:
+                parts = body_response.rsplit("\n", 1)
+                body_response = parts[0]
+                http_status = parts[1].strip() if len(parts) == 2 else "200"
 
             # Log safe URL (no query string, no signature)
             safe_log_url = f"{BINANCE_API_BASE}{endpoint}"

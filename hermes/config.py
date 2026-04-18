@@ -34,6 +34,9 @@ MINIMAX_BASE_URL = "https://api.minimax.io/anthropic"
 MINIMAX_MODEL = "MiniMax-M2.7"
 AGENT_MEMORY_FILE = SCRIPT_DIR / "hermes_agent_memory.json"
 
+# Binance Configuration
+TESTNET = _env.get("TESTNET", "false").lower() == "true"
+
 # Trading Parameters (USDT amounts for Binance)
 MAX_TRADE_USDT = 100
 MIN_TRADE_USDT = 1
