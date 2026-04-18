@@ -378,10 +378,12 @@ async def run_daemon(get_balance_func):
     log.info(f"WS parallel fill complete. Prices loaded for {len(prices)} pairs.")
 
     # Seed RSI state from WS prices so it's initialized before trade checks start
+    # period=3 requires >= 2 ticks to set initialized=True; use 15 ticks for stability
     from hermes.indicators.rsi import update_rsi
     for pair, data in prices.items():
         if data.get("source") in ("ws", "ws_summary", "ws_orderbook"):
-            update_rsi(pair, data["price"])
+            for _ in range(15):
+                update_rsi(pair, data["price"])
 
     if not state.active_pairs:
         state.active_pairs, _ = await update_active_pairs()
