@@ -21,6 +21,9 @@ def _ws_price_update(pair, data):
         "updated": time.time(),
         "source": data.get("source", "ws")
     }
+    # Update 3m RSI from live WS price
+    from hermes.indicators.rsi import update_rsi
+    update_rsi(pair, data["price"])
 
 class IndodaxWS:
     """Indodax WebSocket client for real-time price feeds."""
