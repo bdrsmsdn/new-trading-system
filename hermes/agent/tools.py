@@ -276,12 +276,18 @@ def _execute_rank_pairs() -> dict:
     from hermes.daemon.tasks import rank_all_pairs
     from hermes.api.rest import fetch_all_prices
     from hermes.state import prices
+    from concurrent.futures import ThreadPoolExecutor
 
     # Make sure we have fresh prices
     if len(prices) < 5:
         fetch_all_prices()
 
-    rankings = asyncio.get_event_loop().run_until_complete(rank_all_pairs())
+    # rank_all_pairs is async; run it in a thread with its own event loop
+    # to avoid "event loop already running" error when called from async context
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        rankings = executor.submit(asyncio.run, rank_all_pairs())
+        rankings = rankings.result(timeout=60)
+
     result = [{"pair": p, "score": s, "signal": sig, "daily_pos": dp}
               for p, s, sig, dp in rankings[:15]]  # Top 15
     return {"rankings": result}
