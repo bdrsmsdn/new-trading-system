@@ -244,6 +244,7 @@ def _execute_get_signal(pair: str) -> dict:
 def _execute_get_signal_v2(pair: str, risk_pct: float = 0.01) -> dict:
     from hermes.indicators.strategy_new import get_signal_v2
     from hermes.api.balance import get_balance
+    from hermes.config import MAX_TRADE_USDT
     balance = get_balance(use_cache=True)
     capital = balance.get("usdt", MAX_TRADE_USDT)
     return get_signal_v2(pair, capital=capital, risk_pct=risk_pct)
@@ -334,6 +335,7 @@ def _execute_buy(pair: str, price: float = None) -> dict:
     from hermes.api.balance import get_balance
     from hermes.trading.execution import execute_buy
     from hermes.state import prices as price_cache
+    from hermes.config import MIN_TRADE_USDT
 
     balance = get_balance(use_cache=False)
     usdt = balance.get("usdt", 0)
@@ -354,6 +356,7 @@ def _execute_sell(pair: str, qty: float, price: float = None) -> dict:
     from hermes.api.rest import fetch_price_rest
     from hermes.trading.execution import execute_sell
     from hermes.state import prices as price_cache
+    from hermes.config import MIN_TRADE_USDT
 
     if not price:
         cached = price_cache.get(pair, {})
@@ -362,7 +365,7 @@ def _execute_sell(pair: str, qty: float, price: float = None) -> dict:
         return {"error": "no_price", "pair": pair}
 
     idr_value = qty * price
-    if idr_value < 10000:
+    if idr_value < MIN_TRADE_USDT:
         return {"error": "below_minimum_trade", "idr_value": idr_value}
 
     success = execute_sell(pair, price, qty, reason="agent_chat")
