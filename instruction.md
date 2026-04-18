@@ -1,113 +1,180 @@
 # Hermes Trading System — Agent Instructions
 
 ## Overview
-You are controlling Hermes, an autonomous crypto trading system on Indodax (Indonesian exchange).
-All amounts are in Indonesian Rupiah (IDR). Minimum trade size: Rp 10,000.
+Hermes is an autonomous crypto trading system for Indodax (Indonesian exchange). It runs as a daemon that monitors pairs, executes trades, and manages a portfolio. The AI agent ("Hermes") interacts via Telegram.
 
-## Available Commands
-All commands: `python -m hermes.cli <command> [args]`
-All outputs are **JSON to stdout**. Logs go to stderr/files.
+**You are the AI agent controlling this system.** Your job is to help the owner ("Badra") trade crypto via Telegram chat.
 
-### Market Data
-| Command | Description | Example |
-|---------|-------------|---------|
-| `fear-greed` | Get Fear & Greed index (0-100) | `python -m hermes.cli fear-greed` |
-| `get-price <pair>` | Get live price for a pair | `python -m hermes.cli get-price doge` |
-| `market-regime` | Get current regime (BULL/BEAR/SIDEWAYS) | `python -m hermes.cli market-regime` |
+---
 
-### Analysis (Legacy Strategy)
-| Command | Description | Example |
-|---------|-------------|---------|
-| `get-signal <pair>` | Get signal + score for a pair | `python -m hermes.cli get-signal doge` |
-| `rank-pairs` | Rank all 30 pairs by signal score | `python -m hermes.cli rank-pairs` |
-| `analyze --pair <pair>` | Full analysis of one pair | `python -m hermes.cli analyze --pair doge` |
-| `analyze --all` | Full analysis of all pairs | `python -m hermes.cli analyze --all` |
+## Quick Reference
 
-### Analysis V2 (RSI + EMA + Orderbook)
-> **Professional-grade strategy** using RSI(14), EMA(9/21) crossover, and orderbook analysis.
-> Recommended over legacy strategy for better signal quality.
+### Starting the System
+```bash
+cd C:/BADRA/new-trading-system
+PYTHONIOENCODING=utf-8 python -X utf8 -m hermes.cli daemon    # Full daemon (trading + AI)
+PYTHONIOENCODING=utf-8 python -X utf8 -m hermes.cli agent      # Telegram AI agent only (no trading)
+python -m hermes.cli rank-pairs                                 # CLI: rank all pairs
+```
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `signal-v2 --pair <pair>` | V2 signal for one pair | `python -m hermes.cli signal-v2 --pair doge` |
-| `signal-v2 --all` | V2 signal for all pairs | `python -m hermes.cli signal-v2 --all` |
-| `signal-v2 --pair <pair> --risk 0.02` | Custom risk % (default: 1%) | `python -m hermes.cli signal-v2 --pair doge --risk 0.02` |
+### Key Files
+| File | Purpose |
+|------|---------|
+| `hermes/trading/execution.py` | Buy/sell execution on Indodax |
+| `hermes/trading/positions.py` | Open position monitoring (TP/SL/Trailing) |
+| `hermes/indicators/strategy_new.py` | Strategy V2 signal generation |
+| `hermes/indicators/rsi.py` | RSI calculation (Wilder smoothing) |
+| `hermes/api/websocket.py` | Real-time WebSocket price feed |
+| `hermes/api/rest.py` | REST API calls (prices, candles) |
+| `hermes/agent/agent.py` | AI agent (MiniMax M2.7) |
+| `hermes/agent/tools.py` | Agent function tools (15 tools) |
+| `hermes/agent/memory.py` | Self-learning memory |
+| `hermes/daemon/tasks.py` | Daemon loops |
+| `hermes/state.py` | Global state (positions, prices, RSI) |
+| `hermes/notifications/telegram.py` | Telegram notifications |
 
-**V2 Signal Interpretation:**
-- **LONG**: All conditions met — RSI ≤30 OR exiting oversold + EMA9 crosses above EMA21 + price above both EMAs
-- **SHORT**: All conditions met — RSI ≥70 OR exiting overbought + EMA9 crosses below EMA21 + price below both EMAs
-- **NO TRADE SETUP**: Conditions not aligned
+### Key State
+- `state.positions` — open positions: `{pair: {entry_price, qty, time, stop_loss, take_profit, peak_price}}`
+- `state.prices` — live WS prices: `{pair: {price, bid, ask, high, low, source, updated}}`
+- `state.rsi_state` — RSI Wilder state: `{pair: {avg_gain, avg_loss, last_price, initialized}}`
+- `agent_memory.outcomes` — closed trade outcomes for performance analysis
 
-**V2 Output Fields:**
-- `signal_type`: LONG / SHORT / NO TRADE SETUP
-- `entry_price`, `stop_loss`, `take_profit_1/2/3`
-- `rsi_value`, `ema_9`, `ema_21`, `trend_bias`
-- `signal_confidence`: Low / Medium / High
-- `orderbook_imbalance`: bid_vol/ask_vol ratio (>1 = bullish pressure, <1 = bearish)
-- `risk_percent`, `position_size`
-- `reason`: Explanation of why signal is valid
+---
 
-### Portfolio
-| Command | Description | Example |
-|---------|-------------|---------|
-| `get-balance` | Get IDR + all coin balances | `python -m hermes.cli get-balance` |
-| `portfolio` | Full portfolio dashboard (JSON) | `python -m hermes.cli portfolio` |
-| `state` | View positions, active pairs | `python -m hermes.cli state` |
-| `check-positions` | Check TP/SL on open positions | `python -m hermes.cli check-positions` |
+## How Trades Work
 
-### Trading
-| Command | Description | Example |
-|---------|-------------|---------|
-| `execute-buy <pair>` | Buy with auto price + sizing | `python -m hermes.cli execute-buy doge` |
-| `execute-buy <pair> --price N` | Buy at specific price | `python -m hermes.cli execute-buy doge --price 1600` |
-| `execute-sell <pair> --qty N` | Sell specific quantity | `python -m hermes.cli execute-sell doge --qty 6.0` |
+### Buy Flow
+1. Daemon `daemon_trade_check_v2()` finds LONG signal with confidence
+2. Calls `execute_buy(pair, price, idr_balance)` in `execution.py`
+3. Position saved to `state.positions[pair]`
+4. `telegram_trade_alert()` sent with BUY details
+5. `log_trade_decision()` called in `agent.py` (before confirmation, if via AI agent)
 
-### Autonomous
-| Command | Description |
-|---------|-------------|
-| `daemon` | Start autonomous trading (runs forever) |
-| `one-shot` | Single trading iteration then exit |
+### Sell Flow
+1. `check_open_positions()` monitors prices every tick
+2. TP hit → `execute_sell(pair, price, qty, reason="tp")`
+3. After sell success:
+   - `log_trade_outcome()` → saves PnL to `agent_memory.outcomes`
+   - `telegram_trade_alert()` → sends SELL notification
+4. Position deleted from `state.positions`
 
-## Signal Interpretation
-- **STRONG_BUY** (score ≥5): High confidence entry
-- **BUY** (score ≥3): Good entry
-- **WEAK_BUY** (score 1-2): Marginal, probably skip
-- **HOLD** (score 0): No action
-- **SELL** (score ≤-1): Consider exiting
-- **STRONG_SELL** (score ≤-3): Exit immediately
+### Exit Reasons
+- `"tp"` — Take Profit hit
+- `"sl"` — Stop Loss hit
+- `"trailing"` — Trailing stop hit
+- `"signal_sell"` — Strategy V2 SELL signal
+- `"rebalance_drift"` — Portfolio rebalancing
+- `"manual"` — Manual sell via agent
 
-## Rate Limit Awareness
-⚠️ Indodax limits public API to ~150 req/min.
-- ❌ Do NOT call `analyze --all` more than once per 5 minutes
-- ❌ Do NOT call `get-signal` for all 30 pairs in rapid succession
-- ✅ Use `rank-pairs` instead (batched, cached)
-- ✅ `get-price` is cheap (uses WebSocket cache when daemon is running)
-- ✅ `get-balance` is cached for 120s automatically
+---
 
-## Common Workflows
+## Important Patterns
 
-### "Should I buy X?"
-1. `fear-greed` → Check market sentiment
-2. `get-signal <pair>` → Get signal + score
-3. If BUY/STRONG_BUY → `execute-buy <pair>`
+### RSI Calculation
+- **3m RSI**: Updated live from WS price ticks via `update_rsi(pair, price)` — no REST needed
+- **1h/4h RSI**: Fetched from `/tradingview/history_v2` via `fetch_candles()` — uses REST budget
+- RSI formula: Wilder's smoothed RSI (not simple SMA)
+- `get_rsi(pair)` reads from `state.rsi_state` (read-only, no update)
 
-### "What's my portfolio status?"
-1. `portfolio` → Full dashboard with P&L
+### Strategy V2 Signal
+```
+LONG when: RSI <= 35 AND daily_pos <= 30% AND (RSI direction up/neutral)
+SHORT when: RSI >= 65 AND daily_pos >= 70% AND (RSI direction down/neutral)
+NO TRADE SETUP: otherwise
+Confidence: High (>=0.8) / Medium (>=0.6) / Low
+```
 
-### "What are the best opportunities right now?"
-1. `rank-pairs` → See all pairs ranked by signal score
-2. Focus on top 3-5 with BUY+ signals
+### Agent Tools (for AI agent)
+- `get_price(pair)` — live WS price
+- `get_signal(pair)` — V1 signal (legacy)
+- `get_signal_v2(pair)` — V2 signal with entry/SL/TP/confidence
+- `get_balance()` — account balance
+- `get_portfolio()` — open positions with PnL
+- `get_fear_greed()` — F&G index
+- `rank_pairs()` — all pairs ranked by score
+- `execute_buy(pair)` — **requires "ya" confirmation**
+- `execute_sell(pair, qty)` — **requires "ya" confirmation**
+- `analyze_performance()` — trade history from `agent_memory.outcomes`
+- `save_strategy_note()` — agent saves custom strategy
 
-### "Check if I should take profit"
-1. `check-positions` → Auto-checks TP/SL/trailing for all positions
+### Performance Tracking
+Trade outcomes are tracked:
+- `execute_sell()` calls `log_trade_outcome()` → saved to `hermes_agent_memory.json`
+- `analyze_performance()` reads from `agent_memory.outcomes` → shows win rate, avg PnL, best/worst trade
+- Telegram alerts sent on every buy/sell
 
-## Error Handling
-- If a command returns `{"error": "..."}`, the operation failed
-- `{"error": "rate_limited"}` → Wait 60s before retrying
-- `{"error": "insufficient_balance"}` → IDR balance too low for trade
-- `{"error": "no_price"}` → Price data unavailable, try again later
+---
 
-## Tracked Pairs (30 total)
-doge, xrp, ton, sol, btc, eth, bnb, pepe, neirocto, floki,
-shib, ada, matic, link, avax, dot, bonk, dogewif, labu, orto,
-near, algo, trx, sand, mana, axs, enj, ftm, atom, uni
+## Common Issues
+
+### RSI Stuck at 50.0 or 100.0
+- **3m RSI stuck at 100**: Stale cache from previous run. Fix: restart daemon (cache cleared on startup).
+- **1h/4h RSI at 50**: `/tradingview/history_v2` returned empty or 404. Check REST budget.
+
+### 401 Auth Errors
+- MiniMax API requires `anthropic-version: 2023-06-01` header — fixed in `agent.py`
+- If Telegram bot fails, check `MINIMAX_API_KEY` in `.env`
+
+### REST 429 Errors
+- Budget limit: 80 requests/minute to Indodax REST API
+- Daemon uses WS prices first, only falls back to REST if WS fails
+- `DAEMON_REBALANCE_INTERVAL = 21600` (6 hours) to avoid 429
+
+### Telegram Bot Not Responding
+- Check `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`
+- Bot only responds to `TELEGRAM_CHAT_ID`
+- Run `python -m hermes.cli agent` for AI chat mode
+
+---
+
+## Config Values (from `config.py`)
+```
+MIN_TRADE_RP = 10,000        # Minimum trade in IDR
+MAX_TRADE_RP = 1,000,000     # Max per trade
+STOP_LOSS_PCT = 0.05         # 5% stop loss
+TAKE_PROFIT_PCT = 0.10      # 10% take profit
+TRAILING_STOP_PCT = 0.03    # 3% trailing stop
+TRAILING_ACTIVATION_PCT = 0.05  # Activate after 5% gain
+FG_BUY_THRESHOLD = 30        # F&G <= 30 → buy zone
+RSI_BUY_THRESHOLD = 35
+RSI_STRONG_BUY = 30
+RSI_SELL_THRESHOLD = 65
+```
+
+---
+
+## File Locations
+```
+hermes/
+  agent/
+    agent.py          # AI agent (MiniMax M2.7)
+    tools.py          # 15 function tools for agent
+    memory.py         # Self-learning: log_trade_decision(), log_trade_outcome(), get_performance_summary()
+    bot.py            # Telegram bot polling
+  api/
+    rest.py           # REST API calls (fetch_candles, fetch_price_rest, update_price)
+    websocket.py      # WS client (Indodax WS)
+    auth.py           # Indodax signed API calls
+  indicators/
+    rsi.py            # RSI calculation
+    signals.py        # V1 signals
+    strategy_new.py   # Strategy V2
+    fear_greed.py     # Fear & Greed index
+    candles.py        # EMA, swing levels, ATR
+    volatility.py     # Dynamic position sizing
+    technicals.py    # MACD, Bollinger Bands, Supertrend, ATR, ADX (NEW)
+  trading/
+    execution.py      # Buy/sell on Indodax
+    positions.py      # TP/SL/Trailing monitoring
+    rebalancer.py    # Portfolio rebalancing
+    dca.py           # DCA and Grid trading (NEW)
+    risk.py          # Monte Carlo + Kelly criterion (NEW)
+  daemon/
+    tasks.py          # Daemon loops
+  notifications/
+    telegram.py       # Telegram alerts
+  state.py            # Global state singleton
+  config.py           # All config values
+  logging_setup.py    # Logging config
+backtesting.py       # Backtesting engine (NEW)
+```
