@@ -33,6 +33,12 @@ NONCE_FILE.parent.mkdir(parents=True, exist_ok=True)
 TELEGRAM_BOT_TOKEN = _env.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = _env.get("TELEGRAM_CHAT_ID", "")
 
+# MiniMax AI Agent (Anthropic-compatible API)
+MINIMAX_API_KEY = _env.get("MINIMAX_API_KEY", "")
+MINIMAX_BASE_URL = "https://api.minimax.io/anthropic"
+MINIMAX_MODEL = "MiniMax-M2.7"
+AGENT_MEMORY_FILE = SCRIPT_DIR / "hermes_agent_memory.json"
+
 # Trading Parameters
 MAX_TRADE_RP = 1_000_000
 MIN_TRADE_RP = 10_000

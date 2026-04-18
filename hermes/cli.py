@@ -58,6 +58,7 @@ def main():
     sub.add_parser("daemon", help="Run autonomous daemon")
     sub.add_parser("one-shot", help="Run single trading iteration")
     sub.add_parser("budget", help="Show REST API budget status")
+    sub.add_parser("agent", help="Start Telegram AI chatbot agent")
     
     args = parser.parse_args()
     
@@ -222,6 +223,13 @@ def main():
         state.save()
         budget = get_rest_budget_status()
         to_json({"status": "one-shot completed", "rest_budget": budget})
+
+    elif args.command == "agent":
+        from hermes.agent.bot import start_bot
+        print("🤖 Starting Hermes AI Trading Agent (Telegram)...")
+        print("   Model: MiniMax-M2.7 (Anthropic-compatible)")
+        print("   Press Ctrl+C to stop")
+        start_bot()
 
 if __name__ == "__main__":
     main()
