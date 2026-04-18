@@ -52,6 +52,9 @@ def execute_buy(pair: str, price: float, idr_balance: float) -> bool:
         log.info(f"✅ BUY SUCCESS: {format_coin(coin_amount, pair)} @ Rp {price:,.0f}")
         log.info(f"   Total: Rp {spent_rp:,.0f}")
 
+        from hermes.notifications.telegram import telegram_trade_alert
+        telegram_trade_alert(pair=pair, side="BUY", qty=coin_amount, price=price, total=spent_rp)
+
         state.positions[pair] = {
             "entry_price": price,
             "qty": coin_amount,
@@ -132,8 +135,29 @@ def execute_sell(pair: str, price: float, qty: float, reason: str = "", order_ty
         trade_details = result["return"]
         log.info(f"✅ SELL SUCCESS: {format_coin(qty, pair)} @ Rp {price:,.0f}")
         log.info(f"   Total: Rp {float(trade_details.get('total', 0)):,.0f}")
-        
+
+        # Archive trade outcome and notify
         if pair in state.positions:
+            entry = state.positions[pair]["entry_price"]
+            entry_time = state.positions[pair]["time"]
+            hold_hours = (time.time() - entry_time) / 3600
+            pnl_pct = (price - entry) / entry * 100 if entry > 0 else 0
+            total_rp = float(trade_details.get("total", 0))
+
+            from hermes.agent.memory import agent_memory
+            agent_memory.log_trade_outcome(
+                pair=pair,
+                entry_price=entry,
+                exit_price=price,
+                qty=qty,
+                pnl_pct=pnl_pct,
+                exit_reason=reason or "manual",
+                hold_duration_hours=hold_hours,
+            )
+
+            from hermes.notifications.telegram import telegram_trade_alert
+            telegram_trade_alert(pair=pair, side="SELL", qty=qty, price=price, total=total_rp)
+
             del state.positions[pair]
         state.last_trade_time[pair] = time.time()
         state.save()
