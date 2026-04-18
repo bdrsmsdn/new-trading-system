@@ -95,7 +95,8 @@ class HermesAgent:
 
         import anthropic
         self._auth_headers = {"Authorization": f"Bearer {MINIMAX_API_KEY}"}
-        self.client = anthropic.Anthropic(
+        # Use AsyncAnthropic to avoid blocking the Telegram Bot's event loop
+        self.client = anthropic.AsyncAnthropic(
             api_key="not-used",  # SDK requires non-empty, but MiniMax ignores X-Api-Key
             base_url=MINIMAX_BASE_URL,
         )
@@ -163,7 +164,7 @@ class HermesAgent:
             log.info(f"[AGENT] Iteration {iteration + 1}, messages: {len(messages)}")
 
             # Call MiniMax API
-            response = self.client.messages.create(
+            response = await self.client.messages.create(
                 model=self.model,
                 max_tokens=4096,
                 system=system_prompt,
