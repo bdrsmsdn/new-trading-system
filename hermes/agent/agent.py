@@ -178,7 +178,13 @@ class HermesAgent:
             tool_calls = []
 
             for block in response.content:
-                if block.type == "text":
+                if block.type == "thinking":
+                    # MiniMax M2.7 returns thinking blocks — must preserve in history
+                    assistant_content.append({
+                        "type": "thinking",
+                        "thinking": block.thinking,
+                    })
+                elif block.type == "text":
                     text_parts.append(block.text)
                     assistant_content.append({
                         "type": "text",
@@ -193,7 +199,7 @@ class HermesAgent:
                         "input": block.input
                     })
 
-            # Add assistant response to history
+            # Add assistant response to history (include ALL blocks per MiniMax docs)
             messages.append({
                 "role": "assistant",
                 "content": assistant_content
