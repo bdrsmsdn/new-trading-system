@@ -101,16 +101,6 @@ class _C:
 
 def _supports_color() -> bool:
     """Check whether the terminal supports ANSI colors."""
-    # Windows: enable VT sequences via kernel32
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            # Enable ENABLE_VIRTUAL_TERMINAL_PROCESSING (0x0004)
-            kernel32.SetConsoleMode(kernel32.GetStdHandle(-12), 7)
-            return True
-        except Exception:
-            return False
     return hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
 
 
@@ -156,14 +146,6 @@ class ColorFormatter(logging.Formatter):
         ("SELL SUCCESS", _C.BOLD + _C.BR_GREEN),
         ("BUY FAILED",   _C.BOLD + _C.BR_RED),
         ("SELL FAILED",  _C.BOLD + _C.BR_RED),
-        ("✅",           _C.BR_GREEN),
-        ("❌",           _C.BR_RED),
-        ("⚠️",           _C.BR_YELLOW),
-        ("🎯",           _C.BR_GREEN),
-        ("🛑",           _C.BR_RED),
-        ("🟢",           _C.BR_GREEN),
-        ("🔴",           _C.BR_RED),
-        ("🌅",           _C.BR_YELLOW),
         (" BUY",         _C.BR_GREEN),
         (" SELL",        _C.BR_MAGENTA),
         ("LONG",         _C.BR_GREEN),
@@ -171,15 +153,10 @@ class ColorFormatter(logging.Formatter):
         ("BULL",         _C.BR_GREEN),
         ("BEAR",         _C.BR_RED),
         ("SIDEWAYS",     _C.BR_YELLOW),
-        ("starting",     _C.DIM + _C.BR_CYAN),
-        ("Starting",     _C.DIM + _C.BR_CYAN),
-        ("Daemon",       _C.DIM + _C.BR_CYAN),
-        ("daemon",       _C.DIM + _C.BR_CYAN),
         ("Error:",       _C.BR_RED),
         ("error:",       _C.BR_RED),
         ("FAILED",       _C.BR_RED),
         ("SKIPPED",      _C.BR_YELLOW),
-        ("WARNING",      _C.BR_YELLOW),
     ]
 
     def _colorize_message(self, msg: str) -> str:
