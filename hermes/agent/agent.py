@@ -84,9 +84,8 @@ class HermesAgent:
         """Initialize the agent with MiniMax Anthropic-compatible client.
 
         MiniMax requires 'Authorization: Bearer <key>' header.
-        In the Anthropic SDK:
-          - api_key      -> sends 'X-Api-Key' header (NOT what MiniMax wants)
-          - auth_token   -> sends 'Authorization: Bearer' header (correct!)
+        We inject it via extra_headers on every API call for max
+        compatibility across all anthropic SDK versions.
         """
         if not MINIMAX_API_KEY:
             raise ValueError(
@@ -95,13 +94,14 @@ class HermesAgent:
             )
 
         import anthropic
+        self._auth_headers = {"Authorization": f"Bearer {MINIMAX_API_KEY}"}
         self.client = anthropic.Anthropic(
-            auth_token=MINIMAX_API_KEY,
+            api_key="not-used",  # SDK requires non-empty, but MiniMax ignores X-Api-Key
             base_url=MINIMAX_BASE_URL,
         )
         self.model = MINIMAX_MODEL
-        self.conversations: Dict[str, List[Dict]] = {}  # chat_id -> messages
-        self.pending_confirmations: Dict[str, Dict] = {}  # chat_id -> pending tool call
+        self.conversations: Dict[str, List[Dict]] = {}
+        self.pending_confirmations: Dict[str, Dict] = {}
         log.info(f"[AGENT] Initialized with model={self.model}, base_url={MINIMAX_BASE_URL}")
 
     def _get_messages(self, chat_id: str) -> List[Dict]:
@@ -170,6 +170,7 @@ class HermesAgent:
                 messages=messages,
                 tools=TOOLS,
                 temperature=0.7,
+                extra_headers=self._auth_headers,
             )
 
             # Process response content blocks
