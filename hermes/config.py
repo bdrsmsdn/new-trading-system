@@ -34,7 +34,7 @@ TELEGRAM_BOT_TOKEN = _env.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = _env.get("TELEGRAM_CHAT_ID", "")
 
 # Trading Parameters
-MAX_TRADE_RP = 10_000
+MAX_TRADE_RP = 1_000_000
 MIN_TRADE_RP = 10_000
 STOP_LOSS_PCT = 0.05
 TAKE_PROFIT_PCT = 0.10
@@ -71,10 +71,15 @@ ANALYSIS_REASSESS_INTERVAL = 300
 WS_PRIORITY_PAIRS = {"doge", "xrp", "ton", "sol", "btc", "eth", "bnb"}
 
 PAIR_DECIMAL_PLACES = {
+    # coins with prices >= 1 IDR
     "doge": 0, "xrp": 2, "ton": 2, "btc": 6, "eth": 5, "bnb": 4,
-    "sol": 4, "shib": 0, "ada": 2, "matic": 2, "link": 4,
+    "sol": 4, "ada": 2, "matic": 0, "link": 4,
     "avax": 4, "dot": 3, "near": 4, "algo": 3, "trx": 2,
-    "pepe": 0, "neirocto": 0, "floki": 0,
+    "axs": 2, "enj": 2, "ftm": 2, "atom": 3, "uni": 2,
+    "sand": 2, "mana": 2,
+    # coins with prices < 1 IDR — Indodax pricescale (smallest unit = 1e-06 IDR)
+    "pepe": 6, "neirocto": 6, "floki": 6,
+    "shib": 6, "bonk": 6, "dogewif": 6, "labu": 6, "orto": 6,
 }
 
 # Daemon settings
@@ -82,3 +87,4 @@ DAEMON_TRADE_CHECK_INTERVAL = 60
 DAEMON_FG_FETCH_INTERVAL = 300
 DAEMON_REBALANCE_INTERVAL = 21600
 REBALANCE_DRIFT_THRESHOLD = 0.20
+USE_STRATEGY_V2 = True

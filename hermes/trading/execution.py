@@ -1,9 +1,10 @@
+import math
 import time
 from hermes.logging_setup import log
 from hermes.state import state
 from hermes.api.auth import api_call
 from hermes.indicators.volatility import get_dynamic_position_size, calculate_volatility
-from hermes.config import MIN_TRADE_RP, FEE_BUFFER, STOP_LOSS_PCT, TAKE_PROFIT_PCT
+from hermes.config import MIN_TRADE_RP, FEE_BUFFER, STOP_LOSS_PCT, TAKE_PROFIT_PCT, PAIR_DECIMAL_PLACES
 
 def format_coin(amount: float, symbol: str) -> str:
     """Format coin amount for display."""
@@ -24,12 +25,20 @@ def execute_buy(pair: str, price: float, idr_balance: float) -> bool:
         return False
 
     vol_factor = calculate_volatility(pair, price)
+    # For sub-IDR coins (FLOKI, PEPE etc.), Indodax expects price as decimal string
+    # with exactly 6 decimal places, e.g., "0.564338" (NOT integer 564338).
+    decimals = PAIR_DECIMAL_PLACES.get(pair, 0)
+    if decimals > 0:
+        # Format: exactly 6 decimal places as string
+        api_price = f"{price:.{decimals}f}"  # e.g., "0.564338" for FLOKI
+    else:
+        api_price = str(int(price))
     log.info(f"BUY order (dynamic, vol_factor={vol_factor:.2f}): Rp {buy_amount_rp:,.0f} @ Rp {price:,.0f}")
 
     result = api_call("trade",
         pair=f"{pair}_idr",
         type="buy",
-        price=int(price),
+        price=api_price,
         idr=int(buy_amount_rp),
     )
 
@@ -58,8 +67,16 @@ def execute_buy(pair: str, price: float, idr_balance: float) -> bool:
         log.error(f"❌ BUY FAILED: {result.get('error', result)}")
         return False
 
-def execute_sell(pair: str, price: float, qty: float, reason: str = "") -> bool:
-    """Execute a sell order."""
+def execute_sell(pair: str, price: float, qty: float, reason: str = "", order_type: str = "limit") -> bool:
+    """Execute a sell order.
+
+    Args:
+        pair: Trading pair (e.g., 'doge')
+        price: Reference price for limit orders, or 0 for market orders
+        qty: Amount to sell
+        reason: Reason for sell (for logging)
+        order_type: "limit" (default) or "market" (for urgent exits like SL/Trailing)
+    """
     # Validate qty won't fail due to being too small
     idr_value = qty * price
     if idr_value < 10000:
@@ -69,14 +86,46 @@ def execute_sell(pair: str, price: float, qty: float, reason: str = "") -> bool:
         log.warning(f"SELL SKIPPED: qty ({qty}) is zero or negative")
         return False
 
-    log.info(f"SELL order ({reason}): {format_coin(qty, pair)} @ Rp {price:,.0f}")
+    # Round qty to valid decimal places for this pair (Indodax requires ≤8 fractional digits)
+    decimals = PAIR_DECIMAL_PLACES.get(pair, 4)
+    if decimals == 0:
+        qty = math.floor(qty)
+    else:
+        qty = math.floor(qty * (10 ** decimals)) / (10 ** decimals)
 
-    sell_params = {
-        "pair": f"{pair}_idr",
-        "type": "sell",
-        "price": str(int(price)),
-        pair: str(qty),          # e.g. doge="100.0" — required by Indodax docs
-    }
+    log.info(f"SELL order ({reason}): {format_coin(qty, pair)} @ Rp {price:,.0f} [{order_type.upper()}]")
+
+    if order_type == "market":
+        # Market order — instant execution, no price needed
+        # For sub-IDR coins, qty must be integer string
+        decimals = PAIR_DECIMAL_PLACES.get(pair, 0)
+        if decimals > 0:
+            api_qty = str(int(qty))
+        else:
+            api_qty = str(qty)
+        sell_params = {
+            "pair": f"{pair}_idr",
+            "type": "sell_market",
+            pair: api_qty,
+        }
+    else:
+        # Limit order — sell at specific price or better
+        # For sub-IDR coins (FLOKI, PEPE etc.), Indodax expects price as decimal string
+        # with exactly 6 decimal places, e.g., "0.564338" (NOT integer 564338).
+        decimals = PAIR_DECIMAL_PLACES.get(pair, 0)
+        if decimals > 0:
+            api_price = f"{price:.{decimals}f}"  # e.g., "0.564338" for FLOKI
+            api_qty = str(int(qty))  # sub-IDR qty must be integer string
+        else:
+            api_price = str(int(price))
+            api_qty = str(qty)
+        sell_params = {
+            "pair": f"{pair}_idr",
+            "type": "sell",
+            "price": api_price,
+            pair: api_qty,
+        }
+
     result = api_call("trade", **sell_params)
     
     if result.get("success") == 1:

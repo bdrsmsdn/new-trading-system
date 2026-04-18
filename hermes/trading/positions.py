@@ -34,12 +34,12 @@ def check_open_positions(current_price: float, balance: Dict[str, float]) -> Non
             trailing_stop_price = peak_price * (1 - TRAILING_STOP_PCT)
             if current_price <= trailing_stop_price:
                 log.info(f"Trailing SL hit for {pair}: price dropped to {current_price}, trail price {trailing_stop_price}, peak {peak_price}")
-                execute_sell(pair, current_price, qty, "Trailing Stop")
+                execute_sell(pair, current_price, qty, "Trailing Stop", order_type="market")
                 continue
         
         if current_price <= stop_loss:
             log.info(f"SL hit for {pair}: {pnl_pct*100:.1f}%")
-            execute_sell(pair, current_price, qty, "Stop Loss")
+            execute_sell(pair, current_price, qty, "Stop Loss", order_type="market")
             continue
         
         # Signal-based exit — use cached RSI only, no REST calls

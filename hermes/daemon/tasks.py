@@ -8,7 +8,7 @@ from hermes.config import (
     ALL_TRACKED, MAX_ACTIVE_PAIRS, MIN_ACTIVE_PAIRS,
     ANALYSIS_REASSESS_INTERVAL, DAEMON_TRADE_CHECK_INTERVAL, DAEMON_FG_FETCH_INTERVAL,
     DAEMON_REBALANCE_INTERVAL, WS_PAIRS, FG_BUY_THRESHOLD, MIN_TRADE_RP, MAX_TRADE_RP,
-    STOP_LOSS_PCT, TAKE_PROFIT_PCT
+    STOP_LOSS_PCT, TAKE_PROFIT_PCT, USE_STRATEGY_V2
 )
 from hermes.api.websocket import ws_client
 from hermes.indicators.signals import get_daily_position, get_signal, get_market_regime, get_regime_trading_config
@@ -319,9 +319,13 @@ async def run_daemon(get_balance_func):
     log.info(f"Active pairs: {', '.join(state.active_pairs)}")
     
     # Start all daemon tasks
+    trade_check = daemon_trade_check_v2(get_balance_func) if USE_STRATEGY_V2 else daemon_trade_check(get_balance_func)
+    strategy_name = "V2 (RSI + Orderbook + Momentum)" if USE_STRATEGY_V2 else "V1 (F&G + RSI + Daily Position)"
+    log.info(f"Strategy: {strategy_name}")
+
     await asyncio.gather(
         ws_task,
-        daemon_trade_check(get_balance_func),
+        trade_check,
         daemon_fg_fetch(),
         daemon_pair_reassess(),
         daemon_morning_brief(get_balance_func),
