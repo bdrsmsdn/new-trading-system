@@ -95,3 +95,11 @@ DAEMON_FG_FETCH_INTERVAL = 300
 DAEMON_REBALANCE_INTERVAL = 21600
 REBALANCE_DRIFT_THRESHOLD = 0.20
 USE_STRATEGY_V2 = True
+
+# DCA (Dollar Cost Averaging) settings
+DCA_CHECK_INTERVAL = 300          # Check every 5 minutes
+DCA_TRIGGER_PCT = 0.05            # Buy when price drops 5% below avg entry
+DCA_AMOUNT_PCT = 0.10             # Buy 10% of IDR balance per DCA
+DCA_MAX_COUNT = 5                 # Max 5 DCA buys per position
+DCA_COOLDOWN_MINUTES = 30         # 30 minutes between DCA triggers
+DCA_ACTIVE_PAIRS = ["doge", "xrp", "ton", "sol", "btc", "eth"]  # Pairs to DCA

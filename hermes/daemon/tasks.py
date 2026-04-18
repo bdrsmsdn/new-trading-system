@@ -8,7 +8,9 @@ from hermes.config import (
     ALL_TRACKED, MAX_ACTIVE_PAIRS, MIN_ACTIVE_PAIRS,
     ANALYSIS_REASSESS_INTERVAL, DAEMON_TRADE_CHECK_INTERVAL, DAEMON_FG_FETCH_INTERVAL,
     DAEMON_REBALANCE_INTERVAL, WS_PAIRS, FG_BUY_THRESHOLD, MIN_TRADE_RP, MAX_TRADE_RP,
-    STOP_LOSS_PCT, TAKE_PROFIT_PCT, USE_STRATEGY_V2
+    STOP_LOSS_PCT, TAKE_PROFIT_PCT, USE_STRATEGY_V2, DCA_CHECK_INTERVAL,
+    DCA_TRIGGER_PCT, DCA_AMOUNT_PCT, DCA_MAX_COUNT, DCA_COOLDOWN_MINUTES,
+    DCA_ACTIVE_PAIRS
 )
 from hermes.api.websocket import ws_client
 from hermes.indicators.signals import get_daily_position, get_signal, get_market_regime, get_regime_trading_config
@@ -17,6 +19,7 @@ from hermes.indicators.fear_greed import fetch_fear_greed
 from hermes.indicators.strategy_new import get_signal_v2_async, StrategyV2
 from hermes.trading.positions import check_open_positions
 from hermes.trading.execution import execute_buy
+from hermes.trading.dca import DCAConfig, run_dca
 
 # ── Configuration ──
 _MULTI_RSI_TTL = 300  # Match rsi.py TTL
@@ -295,6 +298,62 @@ async def daemon_rebalance(get_balance_func):
         except Exception as e:
             log.error(f"[REBALANCE] Daemon error: {e}")
 
+
+def telegram_dca_alert(pair: str, dca_count: int, qty: float, price: float):
+    """Send DCA execution alert to Telegram."""
+    from hermes.notifications.telegram import telegram_send
+    msg = (
+        f"📈 *DCA Buy Executed!*\n"
+        f"Pair: {pair.upper()}\n"
+        f"DCA #: {dca_count}\n"
+        f"Qty: {qty:,.8f} @ Rp {price:,.0f}"
+    )
+    telegram_send(msg)
+
+
+async def daemon_dca(get_balance_func):
+    """Periodically check DCA conditions for active pairs."""
+    while True:
+        await asyncio.sleep(DCA_CHECK_INTERVAL)
+        try:
+            balance = get_balance_func(use_cache=True)
+            idr = balance.get("idr", 0)
+
+            if idr < MIN_TRADE_RP:
+                continue
+
+            dca_config = DCAConfig(
+                trigger_pct=DCA_TRIGGER_PCT,
+                amount_pct=DCA_AMOUNT_PCT,
+                max_dca_count=DCA_MAX_COUNT,
+                cooldown_minutes=DCA_COOLDOWN_MINUTES,
+            )
+
+            for pair in DCA_ACTIVE_PAIRS:
+                if pair not in state.positions:
+                    continue
+                if pair not in prices:
+                    continue
+
+                price = prices[pair]["price"]
+                result = run_dca(pair, dca_config, idr, price)
+
+                if result["triggered"] and result["action"] == "buy":
+                    log.info(f"[DCA] Executed DCA for {pair.upper()}: "
+                             f"count={result['dca_count']}, new_entry={result['new_entry']:,.0f}")
+                    new_pos = state.positions.get(pair)
+                    if new_pos:
+                        telegram_dca_alert(
+                            pair,
+                            result["dca_count"],
+                            new_pos.get("qty", 0),
+                            result["new_entry"]
+                        )
+                    idr -= MAX_TRADE_RP
+
+        except Exception as e:
+            log.error(f"[DCA] Daemon error: {e}")
+
 async def run_daemon(get_balance_func):
     """Run the trading daemon."""
     log.info("Hermes Trader Daemon starting...")
@@ -340,5 +399,6 @@ async def run_daemon(get_balance_func):
         daemon_fg_fetch(),
         daemon_pair_reassess(),
         daemon_morning_brief(get_balance_func),
-        daemon_rebalance(get_balance_func)
+        daemon_rebalance(get_balance_func),
+        daemon_dca(get_balance_func)
     )
