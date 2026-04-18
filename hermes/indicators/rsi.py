@@ -74,16 +74,16 @@ def update_rsi(pair: str, current_price: float, period: int = 3) -> float:
     return 100 - (100 / (1 + rs))
 
 def get_rsi(pair: str) -> float:
-    """Get current RSI for a pair."""
-    rs_state = state.rsi_state.get(pair, {})
-    avg_gain = rs_state.get("avg_gain", 0)
-    avg_loss = rs_state.get("avg_loss", 0)
-    
-    if avg_loss == 0:
-        return 100.0 if avg_gain > 0 else 50.0
-    
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    """Get current RSI for a pair from 3m candle data.
+
+    Uses calc_rsi_from_candles so RSI is always accurate and never stale
+    or stuck at 50.0 due to initialization gaps.
+    """
+    candles = fetch_candles(pair, interval="3m", limit=100)
+    if not candles or len(candles) < 15:
+        return 50.0
+    rsi = calc_rsi_from_candles(candles, period=14)
+    return rsi if rsi is not None else 50.0
 
 def get_multi_rsi(pair: str, price: float) -> Dict[str, float]:
     """Get RSI across multiple timeframes. Only fetches 1h and 4h to save REST budget."""
