@@ -1,7 +1,7 @@
 # Crypto Trading System — Architecture SPEC
 
-**Updated:** 2026-04-15
-**Exchange:** Indodax (Indonesian crypto exchange)
+**Updated:** 2026-04-18
+**Exchange:** Binance
 **Owner:** Hermes Agent (Badra's personal trading agent)
 
 ---
@@ -13,10 +13,21 @@ Single unified trading system: `hermes_trader.py` (Python)
 | Component | File | Type |
 |-----------|------|------|
 | Trading Engine | `hermes_trader.py` | Python asyncio daemon |
-| Real-time Feed | Built-in `IndodaxWS` class | Native websockets (wss://ws3.indodax.com/ws/) |
+| Real-time Feed | Built-in `BinanceWS` class | Native websockets (wss://stream.binance.com:9443/stream) |
 | State | `hermes_trader_state.json` | Persistent JSON |
 
 > **Note:** Previous architecture with `hermes_daemon.py`, `crypto-trading-system.js`, and openclaw workspace is **DEPRECATED** (deleted 2026-04-13).
+
+---
+
+## 2. Exchange Overview
+
+| Item | Value |
+|------|-------|
+| WebSocket URL | `wss://stream.binance.com:9443/stream` (combined streams) |
+| REST URL | `https://api.binance.com/api/v3/` |
+| Rate Limit | 1200 requests/minute |
+| Pair Format | `<COIN>USDT` (e.g., DOGEUSDT, BTCUSDT) |
 
 ---
 
@@ -24,9 +35,9 @@ Single unified trading system: `hermes_trader.py` (Python)
 
 | Item | Value |
 |------|-------|
-| API Key | `RKPKL9I4-VBPDQOU2-Q51XPKUZ-XTO3KQML-UFKLPAL3` |
-| API Secret | `fd9fcf40c8dee724593d87ca5e4ed10de39e7fa9b427d12d4717a1a25284e5c1556d6acbf2b71e66` |
-| Nonce File | `/home/badra/.hermes/trading/.nonce` |
+| API Key | (from .env) |
+| API Secret | (from .env) |
+| Nonce | Not required (Binance uses timestamp-based signatures) |
 
 ---
 
@@ -77,8 +88,8 @@ python3 hermes_trader.py --analyze   # Analysis only, no trading
 | Trailing SL | Activates at +5% profit, trails 20% from peak |
 
 ### Position Sizing
-- **Max trade:** Rp 10,000 per execution
-- **Min trade:** Rp 10,000
+- **Max trade:** $100 USDT per execution
+- **Min trade:** $10 USDT
 - **Kelly Criterion:** Used for dynamic sizing (capped 10%)
 - **Cooldown:** 60 seconds per pair between trades
 
@@ -194,17 +205,17 @@ python3 hermes_trader.py --analyze   # Analysis only, no trading
 ```json
 {
   "positions": {
-    "doge": {
-      "entry_price": 1600,
+    "DOGEUSDT": {
+      "entry_price": 0.1234,
       "qty": 6.0,
       "time": 1713180000,
-      "stop_loss": 1520,
-      "take_profit": 1760,
-      "peak_price": 1650
+      "stop_loss": 0.1173,
+      "take_profit": 0.1357,
+      "peak_price": 0.1280
     }
   },
-  "last_trade_time": {"doge": 1713180000},
-  "active_pairs": ["doge", "xrp", "ton", "sol", "btc", "eth"]
+  "last_trade_time": {"DOGEUSDT": 1713180000},
+  "active_pairs": ["DOGEUSDT", "XRPUSDT", "TONUSDT", "SOLUSDT", "BTCUSDT", "ETHUSDT"]
 }
 ```
 
@@ -212,11 +223,44 @@ python3 hermes_trader.py --analyze   # Analysis only, no trading
 
 ## 10. Troubleshooting
 
-### Indodax rate limiting
-- Balance API limited to ~1 req/min
-- Prices via WS (real-time, no polling)
-- REST pairs polled at 60s interval to avoid 429
+### Binance Rate Limiting
+- Combined streams endpoint: 1200 requests/minute
+- WebSocket connections: real-time prices, no polling needed
+- REST pairs polled at 60s interval to stay within limits
 
-### Nonce errors
-- Nonce = millisecond timestamp (not incremented sequentially)
-- If error: check `.nonce` file matches expected range
+### Timestamp Sync
+- Binance requires accurate server time for signature
+- System clock drift can cause authentication failures
+- Ensure NTP sync is enabled on the trading host
+
+### Common Issues
+- **WS disconnection**: Auto-reconnect with exponential backoff
+- **Auth failures**: Check API key permissions and time sync
+- **429 Too Many Requests**: Reduce polling frequency
+
+---
+
+## DRY_RUN Mode
+
+Run `./hermes/cli.py daemon --dry-run` or `./hermes/cli.py one-shot --dry-run` to simulate trading without real order execution. Useful for testing strategies and verifying Telegram alerts work correctly.
+
+**How it works:**
+- No Binance API calls are made — orders are simulated only
+- State is still updated (positions tracked, last_trade_time updated) so dry-run outcome is observable
+- Telegram alerts still fire so notification pipeline can be verified
+- All price deviation warnings still log
+
+**CLI examples:**
+```bash
+python hermes/cli.py daemon --dry-run    # dry-run daemon
+python hermes/cli.py one-shot --dry-run # dry-run one-shot
+```
+
+---
+
+## Security Notes
+
+- API signatures are never logged (query strings stripped from log URLs)
+- Binance error responses are sanitized (error codes only, no raw response in logs)
+- Price deviation >2% triggers warning before market orders
+- Telegram rate limited to 3 messages per minute

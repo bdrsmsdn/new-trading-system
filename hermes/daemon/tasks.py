@@ -7,7 +7,7 @@ from hermes.state import state, prices, _multi_rsi_cache
 from hermes.config import (
     ALL_TRACKED, MAX_ACTIVE_PAIRS, MIN_ACTIVE_PAIRS,
     ANALYSIS_REASSESS_INTERVAL, DAEMON_TRADE_CHECK_INTERVAL, DAEMON_FG_FETCH_INTERVAL,
-    DAEMON_REBALANCE_INTERVAL, WS_PAIRS, FG_BUY_THRESHOLD, MIN_TRADE_RP, MAX_TRADE_RP,
+    DAEMON_REBALANCE_INTERVAL, WS_PAIRS, FG_BUY_THRESHOLD, MIN_TRADE_USDT, MAX_TRADE_USDT,
     STOP_LOSS_PCT, TAKE_PROFIT_PCT, USE_STRATEGY_V2, DCA_CHECK_INTERVAL,
     DCA_TRIGGER_PCT, DCA_AMOUNT_PCT, DCA_MAX_COUNT, DCA_COOLDOWN_MINUTES,
     DCA_ACTIVE_PAIRS
@@ -124,6 +124,14 @@ async def daemon_pair_reassess():
             state.active_pairs = new_active
             state.save()
 
+            # Check regime change
+            regime, _ = get_market_regime()
+            if regime != state._last_regime:
+                cfg = get_regime_trading_config()
+                from hermes.notifications.telegram import telegram_regime_alert
+                telegram_regime_alert(regime, state.fg_value, cfg["max_active"], cfg["position_size_multiplier"])
+                state._last_regime = regime
+
             log.info(f"[PAIR-RANK] Top 5: " + " | ".join(
                 f"{p}:{s}({sig})" for p, s, sig, _ in rankings[:5]
             ))
@@ -139,9 +147,9 @@ async def daemon_trade_check(get_balance_func):
         await asyncio.sleep(DAEMON_TRADE_CHECK_INTERVAL)
         try:
             balance = get_balance_func(use_cache=True)
-            idr = balance.get("idr", 0)
+            usdt = balance.get("usdt", 0)
             
-            if idr < MIN_TRADE_RP and not state.positions:
+            if usdt < MIN_TRADE_USDT and not state.positions:
                 continue
             
             # Check positions using WS prices (no REST)
@@ -174,11 +182,11 @@ async def daemon_trade_check(get_balance_func):
                     signal, score, reasons = get_signal(pair, price, multi_rsi)
                     
                     if signal in ["STRONG_BUY", "BUY"]:
-                        if idr >= MIN_TRADE_RP:
+                        if usdt >= MIN_TRADE_USDT:
                             live_balance = get_balance_func(use_cache=False)
-                            idr = live_balance.get("idr", 0)
-                            if idr >= MIN_TRADE_RP and execute_buy(pair, price, idr):
-                                idr -= MAX_TRADE_RP
+                            usdt = live_balance.get("usdt", 0)
+                            if usdt >= MIN_TRADE_USDT and execute_buy(pair, price, usdt):
+                                usdt -= MAX_TRADE_USDT
             
             state.save()
         except Exception as e:
@@ -205,9 +213,9 @@ async def daemon_trade_check_v2(get_balance_func, min_confidence: str = "Medium"
         await asyncio.sleep(DAEMON_TRADE_CHECK_INTERVAL)
         try:
             balance = get_balance_func(use_cache=True)
-            idr = balance.get("idr", 0)
+            usdt = balance.get("usdt", 0)
             
-            if idr < MIN_TRADE_RP and not state.positions:
+            if usdt < MIN_TRADE_USDT and not state.positions:
                 continue
             
             # Check positions using WS prices (no REST)
@@ -229,23 +237,23 @@ async def daemon_trade_check_v2(get_balance_func, min_confidence: str = "Medium"
                     price = prices[pair]["price"]
                     
                     # Run Strategy V2 analysis
-                    signal_data = await get_signal_v2_async(pair, capital=idr, risk_pct=0.01)
+                    signal_data = await get_signal_v2_async(pair, capital=usdt, risk_pct=0.01)
                     signal_type = signal_data.get("signal_type", "NO TRADE SETUP")
                     confidence = signal_data.get("signal_confidence", "Low")
                     conf_level = confidence_order.get(confidence, 0)
                     
                     # Only execute if signal and confidence meet threshold
                     if signal_type == "LONG" and conf_level >= min_conf_level:
-                        if idr >= MIN_TRADE_RP:
+                        if usdt >= MIN_TRADE_USDT:
                             log.info(f"[V2-TRADE] {pair.upper()}: LONG signal ({confidence}) at Rp {price:,.0f}")
                             log.info(f"         RSI: {signal_data.get('rsi_value', 0):.1f} | EMA9: {signal_data.get('ema_9', 0):.4f} | EMA21: {signal_data.get('ema_21', 0):.4f}")
                             log.info(f"         SL: {signal_data.get('stop_loss', 0):,.0f} | TP3: {signal_data.get('take_profit_3', 0):,.0f}")
                             log.info(f"         Orderbook imbalance: {signal_data.get('orderbook_imbalance', 1.0):.2f}")
                             
                             live_balance = get_balance_func(use_cache=False)
-                            idr = live_balance.get("idr", 0)
-                            if idr >= MIN_TRADE_RP and execute_buy(pair, price, idr):
-                                idr -= MAX_TRADE_RP
+                            usdt = live_balance.get("usdt", 0)
+                            if usdt >= MIN_TRADE_USDT and execute_buy(pair, price, usdt):
+                                usdt -= MAX_TRADE_USDT
                     
                     elif signal_type == "SHORT" and conf_level >= min_conf_level:
                         # For shorts, we need to have the asset first
@@ -283,9 +291,9 @@ async def daemon_morning_brief(get_balance_func):
         regime, _ = get_market_regime()
         
         balance = get_balance_func(use_cache=True)
-        log.info(f"IDR Balance: Rp {balance.get('idr', 0):,.0f}")
+        log.info(f"USDT Balance: ${balance.get('usdt', 0):,.2f}")
         
-        telegram_morning_brief(state.fg_value, state.fg_class, balance.get('idr', 0), state.positions)
+        telegram_morning_brief(state.fg_value, state.fg_class, balance.get('usdt', 0), state.positions)
         log.info("=" * 60)
 
 async def daemon_rebalance(get_balance_func):
@@ -317,9 +325,9 @@ async def daemon_dca(get_balance_func):
         await asyncio.sleep(DCA_CHECK_INTERVAL)
         try:
             balance = get_balance_func(use_cache=True)
-            idr = balance.get("idr", 0)
+            usdt = balance.get("usdt", 0)
 
-            if idr < MIN_TRADE_RP:
+            if usdt < MIN_TRADE_USDT:
                 continue
 
             dca_config = DCAConfig(
@@ -336,7 +344,7 @@ async def daemon_dca(get_balance_func):
                     continue
 
                 price = prices[pair]["price"]
-                result = run_dca(pair, dca_config, idr, price)
+                result = run_dca(pair, dca_config, usdt, price)
 
                 if result["triggered"] and result["action"] == "buy":
                     log.info(f"[DCA] Executed DCA for {pair.upper()}: "
@@ -349,18 +357,21 @@ async def daemon_dca(get_balance_func):
                             new_pos.get("qty", 0),
                             result["new_entry"]
                         )
-                    idr -= MAX_TRADE_RP
+                    usdt -= MAX_TRADE_USDT
 
         except Exception as e:
             log.error(f"[DCA] Daemon error: {e}")
 
-async def run_daemon(get_balance_func):
+async def run_daemon(get_balance_func, dry_run: bool = False):
     """Run the trading daemon."""
+    state.dry_run = dry_run
     log.info("Hermes Trader Daemon starting...")
     log.info(f"Strategy: F&G + RSI + Daily Position + Dynamic Pair Selection")
     log.info(f"Tracked pairs: {len(ALL_TRACKED)} ({', '.join(ALL_TRACKED)})")
     log.info(f"Max active pairs: {MAX_ACTIVE_PAIRS} | Reassess every: {ANALYSIS_REASSESS_INTERVAL}s")
-    log.info(f"Max trade: Rp {MAX_TRADE_RP:,} | Stop Loss: {STOP_LOSS_PCT*100:.0f}% | Take Profit: {TAKE_PROFIT_PCT*100:.0f}%")
+    log.info(f"Max trade: Rp {MAX_TRADE_USDT:,} | Stop Loss: {STOP_LOSS_PCT*100:.0f}% | Take Profit: {TAKE_PROFIT_PCT*100:.0f}%")
+    if dry_run:
+        log.info("DRY_RUN MODE — No real orders will be executed")
     
     # Fetch F&G first (uses requests directly, not Indodax API)
     fetch_fear_greed()

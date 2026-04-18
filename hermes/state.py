@@ -16,6 +16,8 @@ class State:
         self.fg_class = "Neutral"
         self.balance_cache: Optional[Dict] = None
         self.balance_cache_time = 0
+        self.dry_run = False
+        self._last_regime = "SIDEWAYS"  # track for regime change detection
         self.load()
     
     def load(self):
@@ -26,6 +28,8 @@ class State:
                 self.positions = data.get("positions", {})
                 self.last_trade_time = data.get("last_trade_time", {})
                 self.active_pairs = data.get("active_pairs", INITIAL_ACTIVE.copy())
+                self.dry_run = data.get("dry_run", False)
+                self._last_regime = data.get("last_regime", "SIDEWAYS")
             except Exception as e:
                 log.warning(f"Failed to load state: {e}")
                 self.active_pairs = INITIAL_ACTIVE.copy()
@@ -49,6 +53,8 @@ class State:
                 "positions": self.positions,
                 "last_trade_time": self.last_trade_time,
                 "active_pairs": self.active_pairs,
+                "dry_run": self.dry_run,
+                "last_regime": self._last_regime,
             }, indent=2))
         except Exception as e:
             log.error(f"Failed to save state: {e}")

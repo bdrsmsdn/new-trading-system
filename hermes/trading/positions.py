@@ -5,7 +5,7 @@ from hermes.state import state, _multi_rsi_cache
 from hermes.indicators.rsi import get_rsi, get_multi_rsi
 from hermes.indicators.signals import get_signal
 from hermes.trading.execution import execute_sell, execute_buy
-from hermes.config import STOP_LOSS_PCT, TAKE_PROFIT_PCT, TRAILING_ACTIVATION_PCT, TRAILING_STOP_PCT, TRADE_COOLDOWN, MIN_TRADE_RP
+from hermes.config import STOP_LOSS_PCT, TAKE_PROFIT_PCT, TRAILING_ACTIVATION_PCT, TRAILING_STOP_PCT, TRADE_COOLDOWN, MIN_TRADE_USDT
 
 _MULTI_RSI_TTL = 300  # Match rsi.py TTL
 
@@ -56,7 +56,7 @@ def check_open_positions(current_price: float, balance: Dict[str, float]) -> Non
                 log.info(f"Signal exit for {pair}: {signal} with +{pnl_pct*100:.1f}%")
                 execute_sell(pair, current_price, qty, f"Signal: {signal}")
 
-def check_for_entries(pair: str, current_price: float, idr_balance: float) -> bool:
+def check_for_entries(pair: str, current_price: float, idr_balance: float, dry_run: bool = False) -> bool:
     """Check if we should enter a position. Budget-aware."""
     last_trade = state.last_trade_time.get(pair, 0)
     if time.time() - last_trade < TRADE_COOLDOWN:
@@ -80,7 +80,7 @@ def check_for_entries(pair: str, current_price: float, idr_balance: float) -> bo
     
     log.info(f"{pair.upper()}: {signal} (score={score}) - {', '.join(reasons)}")
     
-    if signal in ["STRONG_BUY", "BUY"] and idr_balance >= MIN_TRADE_RP:
-        return execute_buy(pair, current_price, idr_balance)
+    if signal in ["STRONG_BUY", "BUY"] and idr_balance >= MIN_TRADE_USDT:
+        return execute_buy(pair, current_price, idr_balance, dry_run=dry_run)
     
     return False

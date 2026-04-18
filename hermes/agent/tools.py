@@ -245,7 +245,7 @@ def _execute_get_signal_v2(pair: str, risk_pct: float = 0.01) -> dict:
     from hermes.indicators.strategy_new import get_signal_v2
     from hermes.api.balance import get_balance
     balance = get_balance(use_cache=True)
-    capital = balance.get("idr", 10_000)
+    capital = balance.get("usdt", MAX_TRADE_USDT)
     return get_signal_v2(pair, capital=capital, risk_pct=risk_pct)
 
 
@@ -336,9 +336,9 @@ def _execute_buy(pair: str, price: float = None) -> dict:
     from hermes.state import prices as price_cache
 
     balance = get_balance(use_cache=False)
-    idr = balance.get("idr", 0)
-    if idr < 10000:
-        return {"error": "insufficient_balance", "idr_balance": idr}
+    usdt = balance.get("usdt", 0)
+    if usdt < MIN_TRADE_USDT:
+        return {"error": "insufficient_balance", "usdt_balance": usdt}
 
     if not price:
         cached = price_cache.get(pair, {})
@@ -346,7 +346,7 @@ def _execute_buy(pair: str, price: float = None) -> dict:
     if not price:
         return {"error": "no_price", "pair": pair}
 
-    success = execute_buy(pair, price, idr)
+    success = execute_buy(pair, price, usdt)
     return {"success": success, "pair": pair, "price": price, "idr_spent": idr if success else 0}
 
 

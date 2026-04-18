@@ -1,6 +1,6 @@
 import math
 from hermes.state import state
-from hermes.config import MAX_TRADE_RP, MIN_TRADE_RP, FEE_BUFFER
+from hermes.config import MAX_TRADE_USDT, MIN_TRADE_USDT, FEE_BUFFER
 from hermes.logging_setup import log
 
 def calculate_volatility(pair: str, current_price: float, period: int = 14) -> float:
@@ -41,23 +41,23 @@ def calculate_atr(pair: str, current_price: float, period: int = 14) -> float:
     atr = sum(tr_values) / len(tr_values)
     return atr
 
-def get_dynamic_position_size(pair: str, current_price: float, idr_balance: float) -> float:
+def get_dynamic_position_size(pair: str, current_price: float, usdt_balance: float) -> float:
     """Calculate dynamic position size based on volatility."""
-    base_size = MAX_TRADE_RP
-    
+    base_size = MAX_TRADE_USDT
+
     vol_factor = calculate_volatility(pair, current_price)
     atr = calculate_atr(pair, current_price)
     atr_ratio = atr / current_price if current_price > 0 else 0.02
-    
+
     combined_factor = vol_factor * 0.7 + max(0.3, min(1.0, 0.02 / atr_ratio)) * 0.3
     dynamic_size = base_size * combined_factor
-    
-    max_affordable = idr_balance * (1 - FEE_BUFFER)
-    if max_affordable < MIN_TRADE_RP:
+
+    max_affordable = usdt_balance * (1 - FEE_BUFFER)
+    if max_affordable < MIN_TRADE_USDT:
         final_size = 0
     else:
-        # Clamp: at least MIN_TRADE_RP (Indodax minimum), at most max_affordable
-        final_size = max(float(MIN_TRADE_RP), min(dynamic_size, max_affordable))
+        # Clamp: at least MIN_TRADE_USDT, at most max_affordable
+        final_size = max(float(MIN_TRADE_USDT), min(dynamic_size, max_affordable))
 
-    log.debug(f"Dynamic size for {pair}: Rp {final_size:,.0f} (vol_factor={vol_factor:.2f}, combined={combined_factor:.2f})")
+    log.debug(f"Dynamic size for {pair}: ${final_size:.2f} (vol_factor={vol_factor:.2f}, combined={combined_factor:.2f})")
     return final_size

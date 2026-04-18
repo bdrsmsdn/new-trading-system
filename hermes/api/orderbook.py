@@ -1,4 +1,4 @@
-"""Orderbook depth analysis for Indodax trading pairs."""
+"""Orderbook depth analysis for Binance trading pairs."""
 import json
 import time
 import subprocess
@@ -29,35 +29,35 @@ class OrderbookData:
 
 
 def _fetch_orderbook_raw(pair: str) -> Optional[str]:
-    """Fetch raw orderbook from Indodax public API.
-    
+    """Fetch raw orderbook from Binance public API.
+
     Args:
-        pair: Trading pair (e.g., 'doge', 'btc')
-    
+        pair: Trading pair (e.g., 'DOGE', 'BTC')
+
     Returns:
         Raw JSON response or None on error
     """
     if not _check_budget():
         return None
-    
-    # Try v2 API first (more detailed)
-    url = f"https://indodax.com/api/v2/{pair}_idr/orderbook"
-    
+
+    # Binance depth endpoint
+    url = f"https://api.binance.com/api/v3/depth?symbol={pair.upper()}USDT&limit=20"
+
     try:
         result = subprocess.run(
             ["curl", "-s", "-A", "Mozilla/5.0", "-w", "\n%{http_code}", url],
             capture_output=True, text=True, timeout=10
         )
         _consume_budget()
-        
+
         parts = result.stdout.rsplit("\n", 1)
         body = parts[0] if len(parts) == 2 else result.stdout
         status_code = parts[1].strip() if len(parts) == 2 else "200"
-        
+
         if status_code == "429":
-            log.warning(f"[ORDERBOOK] HTTP 429 from Indodax — skipping fetch")
+            log.warning(f"[ORDERBOOK] HTTP 429 from Binance — skipping fetch")
             return None
-        
+
         return body
     except Exception as e:
         log.debug(f"[ORDERBOOK] Fetch failed for {pair}: {e}")
@@ -65,78 +65,64 @@ def _fetch_orderbook_raw(pair: str) -> Optional[str]:
 
 
 def parse_orderbook(response: str, pair: str) -> Optional[OrderbookData]:
-    """Parse Indodax orderbook response.
-    
+    """Parse Binance orderbook response.
+
     Args:
         response: Raw JSON response
         pair: Trading pair for logging
-    
+
     Returns:
         OrderbookData or None on parse error
     """
     try:
         data = json.loads(response)
-        
-        # V2 format: {'orderbook': {'buy': [...], 'sell': [...]}}
-        if "orderbook" in data:
-            ob = data["orderbook"]
-            bids_raw = ob.get("buy", [])
-            asks_raw = ob.get("sell", [])
-        # Legacy format: {'bids': [...], 'asks': [...]}
-        elif "bids" in data:
-            bids_raw = data.get("bids", [])
-            asks_raw = data.get("asks", [])
-        else:
-            log.debug(f"[ORDERBOOK] Unknown format for {pair}")
-            return None
-        
-        # Parse bids: [[price, volume], ...]
+
+        # Binance format: {"bids": [[price, qty], ...], "asks": [[price, qty], ...]}
+        # prices and quantities are strings
+        bids_raw = data.get("bids", [])
+        asks_raw = data.get("asks", [])
+
+        # Parse bids: [[price_str, volume_str], ...]
         bids = []
         bid_vol = 0.0
-        for item in bids_raw[:20]:  # Top 20 levels
+        for item in bids_raw[:20]:
             if len(item) >= 2:
                 price = float(item[0])
                 vol = float(item[1])
                 bids.append([price, vol])
                 bid_vol += vol
-        
-        # Parse asks: [[price, volume], ...]
+
+        # Parse asks: [[price_str, volume_str], ...]
         asks = []
         ask_vol = 0.0
-        for item in asks_raw[:20]:  # Top 20 levels
+        for item in asks_raw[:20]:
             if len(item) >= 2:
                 price = float(item[0])
                 vol = float(item[1])
                 asks.append([price, vol])
                 ask_vol += vol
-        
+
         # Calculate spread
         best_bid = bids[0][0] if bids else 0
         best_ask = asks[0][0] if asks else 0
         spread = best_ask - best_bid if best_bid and best_ask else 0
         mid_price = (best_bid + best_ask) / 2 if best_bid and best_ask else 0
         spread_pct = (spread / mid_price * 100) if mid_price else 0
-        
-        # Calculate imbalance: bid_vol / ask_vol
+
+        # Calculate imbalance
         imbalance = bid_vol / ask_vol if ask_vol > 0 else 1.0
-        
-        # Find thick bid/ask levels (support/resistance)
+
+        # Find thick levels
         thick_bid_level = _find_thick_level(bids, side="bid")
         thick_ask_level = _find_thick_level(asks, side="ask")
-        
+
         return OrderbookData(
-            bids=bids,
-            asks=asks,
-            bid_volume=bid_vol,
-            ask_volume=ask_vol,
-            imbalance=imbalance,
-            spread=spread,
-            spread_pct=spread_pct,
-            thick_bid_level=thick_bid_level,
-            thick_ask_level=thick_ask_level,
+            bids=bids, asks=asks,
+            bid_volume=bid_vol, ask_volume=ask_vol,
+            imbalance=imbalance, spread=spread, spread_pct=spread_pct,
+            thick_bid_level=thick_bid_level, thick_ask_level=thick_ask_level,
             ts=time.time()
         )
-    
     except Exception as e:
         log.debug(f"[ORDERBOOK] Parse error for {pair}: {e}")
         return None

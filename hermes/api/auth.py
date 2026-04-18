@@ -1,135 +1,170 @@
 import json
 import time
+import hmac
+import hashlib
 import subprocess
 import inspect
-from hermes.config import API_KEY, API_SECRET, NONCE_FILE
 from hermes.logging_setup import log, tracker
 
-# Global cooldown
-_global_rate_limit_until = 0.0
+# Load from .env
+_env = {}
+try:
+    from pathlib import Path
+    env_file = Path(__file__).parent.parent / ".env"
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith('#') and '=' in line:
+            k, _, v = line.partition('=')
+            _env[k.strip()] = v.strip().strip("'\"")
+except Exception:
+    pass
 
-# In-memory nonce guard — ensures monotonicity even when file I/O fails
-_last_nonce = 0
+API_KEY = _env.get("API_KEY", "")
+API_SECRET = _env.get("API_SECRET", "")
 
-def get_nonce() -> int:
-    """Get and increment nonce for API calls."""
-    global _last_nonce
+BINANCE_API_BASE = "https://api.binance.com"
+BINANCE_SIGNED_ENDPOINTS = ["/api/v3/order", "/api/v3/account"]  # endpoints requiring signature
+
+def get_server_time() -> int:
+    """Fetch Binance server time in milliseconds."""
     try:
-        if NONCE_FILE.exists():
-            with open(NONCE_FILE, "r") as f:
-                content = f.read().strip()
-            try:
-                current = int(content) if content else 0
-            except ValueError:
-                log.warning(f"Nonce file corrupted ('{content}'), resetting")
-                current = 0
-        else:
-            current = 0
-
-        ms = int(time.time() * 1000000)  # microseconds (16 digits)
-        new_nonce = max(ms, current + 1, _last_nonce + 1)
-        _last_nonce = new_nonce
-
-        with open(NONCE_FILE, "w") as f:
-            f.write(str(new_nonce))
-        return new_nonce
+        result = subprocess.run(
+            ["curl", "-s", f"{BINANCE_API_BASE}/api/v3/time"],
+            capture_output=True, text=True, timeout=10
+        )
+        data = json.loads(result.stdout)
+        return int(data["serverTime"])
     except Exception as e:
-        log.error(f"Nonce error: {e}")
-        fallback = max(int(time.time() * 1000000), _last_nonce + 1)
-        _last_nonce = fallback  # persist in memory so next call cannot reuse it
-        return fallback
+        log.debug(f"Failed to get server time: {e}")
+        return None
 
-def sign_request(params_str: str) -> str:
-    """Generate HMAC-SHA512 signature."""
-    import hmac
-    import hashlib
-    return hmac.new(
-        API_SECRET.encode(),
-        params_str.encode(),
-        hashlib.sha512
+_last_timestamp_offset = 0
+
+def binance_signed_request(endpoint: str, params: dict = None, method: str = "POST") -> dict:
+    """Make a signed request to Binance API.
+
+    Args:
+        endpoint: Binance API endpoint (e.g., "/api/v3/order")
+        params: Dictionary of parameters to sign and send
+        method: "POST" or "GET"
+
+    Returns:
+        Parsed JSON response from Binance
+    """
+    global _last_timestamp_offset
+
+    params = params or {}
+    caller = inspect.stack()[1].function
+
+    # Add timestamp (milliseconds)
+    server_time = get_server_time()
+    if server_time:
+        local_time = int(time.time() * 1000)
+        _last_timestamp_offset = server_time - local_time
+
+    params["timestamp"] = int(time.time() * 1000) + _last_timestamp_offset
+
+    # Build query string
+    query_string = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+
+    # Sign with HMAC-SHA256
+    signature = hmac.new(
+        API_SECRET.encode("utf-8"),
+        query_string.encode("utf-8"),
+        hashlib.sha256
     ).hexdigest()
 
-def api_call(method: str, **params) -> dict:
-    """Make authenticated API call to Indodax with retry on rate limit."""
-    global _global_rate_limit_until
-    
-    # Get caller function for logging
-    caller = inspect.stack()[1].function
-    
-    nonce = get_nonce()
-    extra = "&".join(f"{k}={v}" for k, v in params.items())
-    params_str = f"method={method}&nonce={nonce}&{extra}" if extra else f"method={method}&nonce={nonce}"
-    signature = sign_request(params_str)
-    
-    max_retries = 3
-    base_delay = 2
+    # Full URL with signature
+    signed_query = f"{query_string}&signature={signature}"
+    url = f"{BINANCE_API_BASE}{endpoint}"
 
-    url = "https://indodax.com/tapi"
+    # For GET, append query string to URL. For POST, send as body.
+    if method == "GET":
+        url = f"{url}?{signed_query}"
+        body = None
+    else:
+        body = signed_query
 
-    for attempt in range(max_retries):
+    for attempt in range(3):
         try:
             start_time = time.time()
-            result = subprocess.run([
-                "curl", "-s", "-X", "POST", url,
-                "-H", f"Key: {API_KEY}",
-                "-H", f"Sign: {signature}",
-                "-d", params_str,
-                "-H", "User-Agent: Mozilla/5.0",
-                "-w", "\n%{http_code}",
-            ], capture_output=True, text=True, timeout=15)
-            
+
+            cmd = [
+                "curl", "-s", "-X", method, url,
+                "-H", f"X-MBX-APIKEY: {API_KEY}",
+            ]
+            if body:
+                cmd += ["-d", body]
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
             latency = (time.time() - start_time) * 1000
-            
+
             parts = result.stdout.rsplit("\n", 1)
-            body = parts[0] if len(parts) == 2 else result.stdout
             http_status = parts[1].strip() if len(parts) == 2 else "200"
-            
-            # Log request via tracker
-            tracker.log_request(url, f"POST/{method}", caller, http_status, latency)
+            body_response = parts[0] if len(parts) == 2 else result.stdout
 
-            if http_status == "429":
-                _global_rate_limit_until = time.time() + 60
-                delay = base_delay * (2 ** attempt)
-                log.warning(f"[API] HTTP 429 from Indodax TAPI — global cooldown 60s, retry in {delay}s")
-                time.sleep(delay)
-                nonce = get_nonce()
-                params_str = f"method={method}&nonce={nonce}&{extra}" if extra else f"method={method}&nonce={nonce}"
-                signature = sign_request(params_str)
-                continue
+            # Log safe URL (no query string, no signature)
+            safe_log_url = f"{BINANCE_API_BASE}{endpoint}"
+            tracker.log_request(safe_log_url, method, caller, http_status, latency)
 
-            data = json.loads(body)
+            # Handle timestamp error — adjust offset and retry
+            try:
+                resp_data = json.loads(body_response)
+                if resp_data.get("code") == -1021:
+                    # Timestamp invalid — resync
+                    server_time = get_server_time()
+                    if server_time:
+                        _last_timestamp_offset = server_time - int(time.time() * 1000)
+                    if attempt < 2:
+                        continue  # retry with new offset
+                elif resp_data.get("code"):
+                    # Log error code only, not full response
+                    log.error(f"Binance API error code: {resp_data.get('code')}, msg: {resp_data.get('msg', '')}")
+            except json.JSONDecodeError:
+                pass
 
-            error_msg = str(data.get("error", "")).lower()
-            if data.get("success") == 0 and ("too_many_requests" in error_msg or "rate" in error_msg):
-                if attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt)
-                    log.warning(f"Rate limited by Indodax, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
-                    time.sleep(delay)
-                    nonce = get_nonce()
-                    params_str = f"method={method}&nonce={nonce}&{extra}" if extra else f"method={method}&nonce={nonce}"
-                    signature = sign_request(params_str)
-                    continue
-                else:
-                    log.error("Rate limit exceeded after all retries")
-                    return data
+            return resp_data if body_response else {}
 
-            return data
-        except json.JSONDecodeError as e:
-            log.warning(f"[API] Non-JSON response on attempt {attempt + 1}: {e}")
-            if attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                time.sleep(delay)
-                nonce = get_nonce()
-                params_str = f"method={method}&nonce={nonce}&{extra}" if extra else f"method={method}&nonce={nonce}"
-                signature = sign_request(params_str)
-                continue
-            return {"success": 0, "error": "non-json response"}
         except Exception as e:
-            log.error(f"API call failed: {e}")
-            if attempt < max_retries - 1:
-                delay = base_delay * (2 ** attempt)
-                time.sleep(delay)
+            log.error(f"Binance API call failed (attempt {attempt + 1}/3)")
+            log.debug(f"Error details: {e}")
+            if attempt < 2:
+                time.sleep(2 ** attempt)
                 continue
             return {"success": 0, "error": str(e)}
 
     return {"success": 0, "error": "max retries exceeded"}
+
+# Backwards compatibility alias for code that calls api_call()
+def api_call(method: str, **params) -> dict:
+    """Legacy compatibility wrapper — routes to binance_signed_request."""
+    # Map Indodax method names to Binance endpoints
+    if method == "getInfo":
+        return binance_signed_request("/api/v3/account", {}, method="GET")
+    elif method == "trade":
+        # params: pair, type (buy/sell), quantity, price, etc.
+        # Build Binance order params
+        symbol = params.get("pair", "").upper().replace("_", "")  # doge_idr -> DOGEIDR (but we use USDT)
+        # For Binance: symbol should be like DOGEUSDT
+        symbol = symbol.replace("IDR", "USDT") if "IDR" in symbol else f"{symbol}USDT"
+
+        order_params = {
+            "symbol": symbol,
+            "side": params.get("type", "BUY").upper(),
+            "type": "MARKET",  # We use MARKET orders
+        }
+
+        # For market buy, use quoteOrderQty for USDT amount
+        if params.get("type", "").startswith("buy"):
+            order_params["quoteOrderQty"] = params.get("idr", params.get("quoteOrderQty", 100))
+        else:
+            # For market sell, use quantity (coin amount)
+            # Extract quantity from pair param (e.g., doge=1000)
+            for k, v in params.items():
+                if k not in ("pair", "type", "price", "idr"):
+                    order_params["quantity"] = v
+                    break
+
+        return binance_signed_request("/api/v3/order", order_params, method="POST")
+
+    return {"success": 0, "error": f"Unknown method: {method}"}

@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Dict, List
 from hermes.logging_setup import log
 from hermes.state import state, prices, _ticker_cache
-from hermes.config import PRICE_CACHE, ALL_TRACKED, MAX_TRADE_RP
+from hermes.config import PRICE_CACHE, ALL_TRACKED, MAX_TRADE_USDT
 from hermes.api.rest import fetch_price_rest, fetch_ticker_full, update_price, _check_budget
 from hermes.indicators.rsi import get_rsi, get_multi_rsi
 from hermes.indicators.signals import get_daily_position, get_signal, get_market_regime
@@ -214,7 +214,7 @@ def print_analysis_v2(get_balance_func, pair: str = None) -> List[Dict]:
     
     # Get balance for position sizing
     balance = get_balance_func(use_cache=True)
-    capital = balance.get("idr", MAX_TRADE_RP)
+    capital = balance.get("usdt", MAX_TRADE_USDT)
     
     log.info("=" * 70)
     log.info(f"STRATEGY V2 ANALYSIS — RSI+EMA Cross + Orderbook")

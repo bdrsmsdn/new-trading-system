@@ -25,12 +25,6 @@ def load_env() -> dict:
 
 _env = load_env()
 
-API_KEY = _env.get("API_KEY", "")
-API_SECRET = _env.get("API_SECRET", "")
-# Expanded user profile properly for Windows or Linux
-NONCE_FILE = Path(os.path.expanduser("~")) / ".hermes" / "trading" / ".nonce"
-NONCE_FILE.parent.mkdir(parents=True, exist_ok=True)
-
 TELEGRAM_BOT_TOKEN = _env.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = _env.get("TELEGRAM_CHAT_ID", "")
 
@@ -40,9 +34,9 @@ MINIMAX_BASE_URL = "https://api.minimax.io/anthropic"
 MINIMAX_MODEL = "MiniMax-M2.7"
 AGENT_MEMORY_FILE = SCRIPT_DIR / "hermes_agent_memory.json"
 
-# Trading Parameters
-MAX_TRADE_RP = 1_000_000
-MIN_TRADE_RP = 10_000
+# Trading Parameters (USDT amounts for Binance)
+MAX_TRADE_USDT = 100
+MIN_TRADE_USDT = 1
 STOP_LOSS_PCT = 0.05
 TAKE_PROFIT_PCT = 0.10
 TRAILING_STOP_PCT = 0.03
@@ -60,33 +54,33 @@ RSI_SELL_THRESHOLD = 65
 DAILY_POS_BUY = 30
 DAILY_POS_SELL = 70
 
-# Pair Configuration
+# Pair Configuration (Binance uses UPPERCASE symbols)
 ALL_TRACKED = [
-    "doge", "xrp", "ton", "sol", "btc", "eth", "bnb",
-    "pepe", "neirocto", "floki", 
-    "shib", "ada", "matic", "link", "avax",
-    "dot", "bonk", "dogewif", "labu", "orto",
-    "near", "algo", "trx", "sand", "mana",
-    "axs", "enj", "ftm", "atom", "uni",
+    "DOGE", "XRP", "TON", "SOL", "BTC", "ETH", "BNB",
+    "PEPE", "NEIROCTO", "FLOKI",
+    "SHIB", "ADA", "MATIC", "LINK", "AVAX",
+    "DOT", "BONK", "DOGEWIF", "LABU", "ORTO",
+    "NEAR", "ALGO", "TRX", "SAND", "MANA",
+    "AXS", "ENJ", "FTM", "ATOM", "UNI",
 ]
 
 WS_PAIRS = ALL_TRACKED
 MAX_ACTIVE_PAIRS = 8
 MIN_ACTIVE_PAIRS = 3
-INITIAL_ACTIVE = ["doge", "xrp", "ton", "sol", "btc", "eth"]
+INITIAL_ACTIVE = ["DOGE", "XRP", "TON", "SOL", "BTC", "ETH"]
 ANALYSIS_REASSESS_INTERVAL = 300
-WS_PRIORITY_PAIRS = {"doge", "xrp", "ton", "sol", "btc", "eth", "bnb"}
+WS_PRIORITY_PAIRS = {"DOGE", "XRP", "TON", "SOL", "BTC", "ETH", "BNB"}
 
 PAIR_DECIMAL_PLACES = {
-    # coins with prices >= 1 IDR
-    "doge": 0, "xrp": 2, "ton": 2, "btc": 6, "eth": 5, "bnb": 4,
-    "sol": 4, "ada": 2, "matic": 0, "link": 4,
-    "avax": 4, "dot": 3, "near": 4, "algo": 3, "trx": 2,
-    "axs": 2, "enj": 2, "ftm": 2, "atom": 3, "uni": 2,
-    "sand": 2, "mana": 2,
-    # coins with prices < 1 IDR — Indodax pricescale (smallest unit = 1e-06 IDR)
-    "pepe": 6, "neirocto": 6, "floki": 6,
-    "shib": 6, "bonk": 6, "dogewif": 6, "labu": 6, "orto": 6,
+    # Binance precision (quantity decimal places)
+    "DOGE": 0, "XRP": 1, "TON": 3, "BTC": 6, "ETH": 5, "BNB": 4,
+    "SOL": 4, "ADA": 1, "MATIC": 4, "LINK": 4,
+    "AVAX": 4, "DOT": 2, "NEAR": 3, "ALGO": 2, "TRX": 4,
+    "AXS": 2, "ENJ": 2, "FTM": 2, "ATOM": 2, "UNI": 2,
+    "SAND": 2, "MANA": 2,
+    # Low-value coins needing more precision
+    "PEPE": 0, "NEIROCTO": 0, "FLOKI": 0,
+    "SHIB": 0, "BONK": 0, "DOGEWIF": 0, "LABU": 0, "ORTO": 0,
 }
 
 # Daemon settings
@@ -102,4 +96,7 @@ DCA_TRIGGER_PCT = 0.05            # Buy when price drops 5% below avg entry
 DCA_AMOUNT_PCT = 0.10             # Buy 10% of IDR balance per DCA
 DCA_MAX_COUNT = 5                 # Max 5 DCA buys per position
 DCA_COOLDOWN_MINUTES = 30         # 30 minutes between DCA triggers
-DCA_ACTIVE_PAIRS = ["doge", "xrp", "ton", "sol", "btc", "eth"]  # Pairs to DCA
+DCA_ACTIVE_PAIRS = ["DOGE", "XRP", "TON", "SOL", "BTC", "ETH"]  # Pairs to DCA
+
+# Binance rate limit: 1200 requests/minute
+_REST_BUDGET_MAX = 1000

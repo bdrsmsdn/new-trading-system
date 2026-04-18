@@ -55,8 +55,11 @@ def main():
     sub.add_parser("rank-pairs", help="Rank all pairs by score")
     sub.add_parser("market-regime", help="Get market regime")
     sub.add_parser("state", help="Show current state")
-    sub.add_parser("daemon", help="Run autonomous daemon")
-    sub.add_parser("one-shot", help="Run single trading iteration")
+    daemon_parser = sub.add_parser("daemon", help="Run autonomous daemon")
+    daemon_parser.add_argument("--dry-run", action="store_true", help="Simulate trading without real orders")
+
+    one_shot_parser = sub.add_parser("one-shot", help="Run single trading iteration")
+    one_shot_parser.add_argument("--dry-run", action="store_true", help="Simulate trading without real orders")
     sub.add_parser("budget", help="Show REST API budget status")
     sub.add_parser("agent", help="Start Telegram AI chatbot agent")
     
@@ -91,7 +94,7 @@ def main():
     elif args.command == "signal-v2":
         # Strategy V2: RSI + EMA + Orderbook analysis
         balance = get_balance(use_cache=True)
-        capital = balance.get("idr", 10_000)
+        capital = balance.get("usdt", MAX_TRADE_USDT)
         
         if args.pair:
             # Single pair analysis
@@ -117,15 +120,15 @@ def main():
         
     elif args.command == "execute-buy":
         balance = get_balance(use_cache=False)
-        idr = balance.get("idr", 0)
+        usdt = balance.get("usdt", 0)
         price = args.price or fetch_price_rest(args.pair)
         if not price:
             to_json({"error": "no_price"})
             return
-        if idr < 10000:
-            to_json({"error": "below_minimum_trade", "message": f"IDR balance ({idr}) below minimum trade size (Rp 10,000)"})
+        if usdt < MIN_TRADE_USDT:
+            to_json({"error": "below_minimum_trade", "message": f"USDT balance (${usdt}) below minimum trade size ($10)"})
             return
-        success = execute_buy(args.pair, price, idr)
+        success = execute_buy(args.pair, price, usdt)
         to_json({"success": success})
         
     elif args.command == "execute-sell":
@@ -134,9 +137,9 @@ def main():
             to_json({"error": "no_price"})
             return
         qty = args.qty
-        idr_value = qty * price
-        if idr_value < 10000:
-            to_json({"error": "below_minimum_trade", "message": f"Sell order value (Rp {idr_value:,.0f}) below minimum (Rp 10,000)"})
+        usdt_value = qty * price
+        if usdt_value < MIN_TRADE_USDT:
+            to_json({"error": "below_minimum_trade", "message": f"Sell order value (${usdt_value:.2f}) below minimum ($10)"})
             return
         success = execute_sell(args.pair, price, qty, reason="cli_manual")
         to_json({"success": success})
@@ -187,23 +190,30 @@ def main():
         import os
         PID_FILE.write_text(str(os.getpid()))
         try:
-            asyncio.run(run_daemon(get_balance))
+            state.dry_run = getattr(args, 'dry_run', False)
+            if state.dry_run:
+                log.info("DRY_RUN MODE — No real orders will be executed")
+            asyncio.run(run_daemon(get_balance, dry_run=state.dry_run))
         finally:
             if PID_FILE.exists():
                 PID_FILE.unlink()
                 
     elif args.command == "one-shot":
         from hermes.api.rest import fetch_all_prices
-        from hermes.config import MIN_TRADE_RP, FG_BUY_THRESHOLD, MAX_TRADE_RP
+        from hermes.config import MIN_TRADE_USDT, FG_BUY_THRESHOLD, MAX_TRADE_USDT
         from hermes.trading.positions import check_for_entries
-        
+
+        state.dry_run = getattr(args, 'dry_run', False)
+        if state.dry_run:
+            log.info("DRY_RUN MODE — No real orders will be executed")
+
         fg_val, fg_class = fetch_fear_greed()
         balance = get_balance(use_cache=False)
-        idr = balance.get("idr", 0)
-        
+        usdt = balance.get("usdt", 0)
+
         # WS-based price init
         fetch_all_prices()
-        
+
         # Check positions using WS prices
         for pair in list(state.positions.keys()):
             current_price = prices.get(pair, {}).get("price")
@@ -211,15 +221,15 @@ def main():
                 current_price = fetch_price_rest(pair)
             if current_price:
                 check_open_positions(current_price, balance)
-        
+
         if fg_val <= FG_BUY_THRESHOLD:
             for pair in state.active_pairs:
                 current_price = prices.get(pair, {}).get("price")
                 if not current_price:
                     current_price = fetch_price_rest(pair)
                 if current_price:
-                    if check_for_entries(pair, current_price, idr):
-                        idr -= MAX_TRADE_RP
+                    if check_for_entries(pair, current_price, usdt, dry_run=state.dry_run):
+                        usdt -= MAX_TRADE_USDT
         state.save()
         budget = get_rest_budget_status()
         to_json({"status": "one-shot completed", "rest_budget": budget})

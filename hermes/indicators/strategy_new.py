@@ -24,7 +24,7 @@ from hermes.logging_setup import log
 from hermes.state import prices, state
 from hermes.api.orderbook import get_orderbook, orderbook_confirms_signal
 from hermes.config import (
-    MAX_TRADE_RP, MIN_TRADE_RP, PAIR_DECIMAL_PLACES
+    MAX_TRADE_USDT, MIN_TRADE_USDT, PAIR_DECIMAL_PLACES
 )
 
 

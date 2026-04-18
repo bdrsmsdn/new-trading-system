@@ -14,52 +14,55 @@ CANDLE_TTL: Dict[str, int] = {
     "15m": 600, "5m": 120, "3m": 120, "1m": 60,
 }
 
-# Indodax TradingView history_v2 endpoint interval mappings
+# Binance interval mappings
 _TF_MAP: Dict[str, str] = {
-    "1m": "1", "3m": "1", "5m": "1", "15m": "15",
-    "30m": "30", "1h": "60", "4h": "240",
-    "1d": "1D", "1w": "1W",
+    "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m",
+    "30m": "30m", "1h": "1h", "4h": "4h",
+    "1d": "1d", "1w": "1w",
 }
 _INTERVAL_SECONDS: Dict[str, int] = {
-    "1": 60, "15": 900, "30": 1800, "60": 3600,
-    "240": 14400, "1D": 86400, "1W": 604800,
+    "1m": 60, "3m": 180, "5m": 300, "15m": 900,
+    "30m": 1800, "1h": 3600, "4h": 14400,
+    "1d": 86400, "1w": 604800,
 }
 
 def _build_candles_url(pair: str, interval: str, limit: int) -> str:
-    """Build Indodax TradingView history_v2 URL for candles."""
-    tf = _TF_MAP.get(interval, "60")
-    now_ts = int(time.time())
-    from_ts = now_ts - (_INTERVAL_SECONDS.get(tf, 3600) * limit)
-    from_ts = max(from_ts, 946684801)  # must be > 2000-01-01
-    return f"https://indodax.com/tradingview/history_v2?symbol={pair}idr&tf={tf}&from={from_ts}&to={now_ts}"
+    """Build Binance klines URL for candles."""
+    tf = _TF_MAP.get(interval, "1h")
+    return f"https://api.binance.com/api/v3/klines?symbol={pair.upper()}USDT&interval={tf}&limit={limit}"
 
 def _parse_candles(data) -> List[List[float]]:
-    """Parse TradingView history_v2 response into [[ts, o, h, l, c, v]] format."""
+    """Parse Binance klines response into [[ts, o, h, l, c, v]] format."""
+    # Binance klines format:
+    # [1499040000000, "0.0034", "0.0035", "0.0033", "0.0034", "123", ...]
+    # [timestamp_ms, open, high, low, close, volume, ...]
     if not isinstance(data, list):
         return []
     result = []
     for c in data:
-        if isinstance(c, dict) and "Time" in c:
-            result.append([float(c["Time"]), float(c["Open"]), float(c["High"]),
-                           float(c["Low"]), float(c["Close"]), float(c.get("Volume", 0))])
+        if isinstance(c, list) and len(c) >= 6:
+            result.append([
+                float(c[0]),      # timestamp (ms)
+                float(c[1]),      # open
+                float(c[2]),      # high
+                float(c[3]),      # low
+                float(c[4]),      # close
+                float(c[5]),      # volume
+            ])
     return result
 
-_PUBLIC_REST_MIN_INTERVAL = 1.5  # Conservative per-request interval
+_PUBLIC_REST_MIN_INTERVAL = 0.5  # Binance is more generous, allow faster requests
 _last_public_rest_call = 0.0
-_global_rate_limit_until = 0.0
 
-# ── Global REST budget: hard cap of 80 Indodax requests per minute ──
-_REST_BUDGET_MAX = 80
+# ── Global REST budget: 1000 Binance requests per minute ──
+_REST_BUDGET_MAX = 1000
 _rest_budget_count = 0
 _rest_budget_reset_time = 0.0
 
 def _check_budget() -> bool:
-    """Check if we have REST budget remaining AND cooldown is not active."""
+    """Check if we have REST budget remaining."""
     global _rest_budget_count, _rest_budget_reset_time
     now = time.time()
-    # If global cooldown is active, no REST at all
-    if now < _global_rate_limit_until:
-        return False
     if now - _rest_budget_reset_time > 60:
         _rest_budget_count = 0
         _rest_budget_reset_time = now
@@ -72,7 +75,7 @@ def _consume_budget():
 
 def _throttled_public_get(url: str, timeout: int = 10, max_retries: int = 2) -> Optional[str]:
     """Make a throttled public GET via curl with global budget."""
-    global _last_public_rest_call, _global_rate_limit_until
+    global _last_public_rest_call
     caller = inspect.stack()[1].function
 
     # Budget check — if exhausted, return None immediately
@@ -82,10 +85,6 @@ def _throttled_public_get(url: str, timeout: int = 10, max_retries: int = 2) -> 
 
     for attempt in range(max_retries):
         now = time.time()
-        if now < _global_rate_limit_until:
-            wait = _global_rate_limit_until - now
-            log.debug(f"[THROTTLE] Global cooldown active, waiting {wait:.0f}s")
-            time.sleep(wait)
 
         elapsed = time.time() - _last_public_rest_call
         if elapsed < _PUBLIC_REST_MIN_INTERVAL:
@@ -109,9 +108,9 @@ def _throttled_public_get(url: str, timeout: int = 10, max_retries: int = 2) -> 
             tracker.log_request(url, "GET", caller, status_code, latency)
 
             if status_code == "429":
-                _global_rate_limit_until = time.time() + 300  # 5 minute cooldown immediately
-                log.warning(f"[THROTTLE] HTTP 429 from {caller} — global cooldown 300s (budget: {_rest_budget_count}/{_REST_BUDGET_MAX})")
-                return None
+                log.warning(f"[THROTTLE] HTTP 429 from {caller} — backing off (budget: {_rest_budget_count}/{_REST_BUDGET_MAX})")
+                time.sleep(5)  # Simple backoff, no global cooldown
+                continue
 
             return body
         except Exception as e:
@@ -124,7 +123,7 @@ def _throttled_public_get(url: str, timeout: int = 10, max_retries: int = 2) -> 
 async def _async_throttled_public_get(url: str, timeout: int = 10, max_retries: int = 2) -> Optional[str]:
     """Async-safe throttled GET — uses await asyncio.sleep and asyncio.to_thread.
     Use this from daemon/event-loop contexts to avoid blocking the event loop."""
-    global _last_public_rest_call, _global_rate_limit_until
+    global _last_public_rest_call
     caller = inspect.stack()[1].function
 
     if not _check_budget():
@@ -133,10 +132,6 @@ async def _async_throttled_public_get(url: str, timeout: int = 10, max_retries: 
 
     for attempt in range(max_retries):
         now = time.time()
-        if now < _global_rate_limit_until:
-            wait = _global_rate_limit_until - now
-            log.debug(f"[THROTTLE] Global cooldown active, waiting {wait:.0f}s")
-            await asyncio.sleep(wait)
 
         elapsed = time.time() - _last_public_rest_call
         if elapsed < _PUBLIC_REST_MIN_INTERVAL:
@@ -161,9 +156,9 @@ async def _async_throttled_public_get(url: str, timeout: int = 10, max_retries: 
             tracker.log_request(url, "GET", caller, status_code, latency)
 
             if status_code == "429":
-                _global_rate_limit_until = time.time() + 300
-                log.warning(f"[THROTTLE] HTTP 429 from {caller} — global cooldown 300s (budget: {_rest_budget_count}/{_REST_BUDGET_MAX})")
-                return None
+                log.warning(f"[THROTTLE] HTTP 429 from {caller} — backing off (budget: {_rest_budget_count}/{_REST_BUDGET_MAX})")
+                await asyncio.sleep(5)
+                continue
 
             return body
         except Exception as e:
@@ -186,12 +181,13 @@ def fetch_price_rest(pair: str) -> Optional[float]:
         # Return stale price if available
         return cached.get("price") if cached.get("price") else None
 
-    body = _throttled_public_get(f"https://indodax.com/api/ticker/{pair}_idr")
+    # Binance format: {"symbol": "DOGEUSDT", "price": "0.12345000"}
+    body = _throttled_public_get(f"https://api.binance.com/api/v3/ticker/price?symbol={pair.upper()}USDT")
     if body is None:
         return cached.get("price") if cached.get("price") else None
     try:
         data = json.loads(body)
-        return float(data["ticker"]["last"])
+        return float(data["price"])
     except Exception as e:
         log.debug(f"REST price fetch failed for {pair}: {e}")
         return cached.get("price") if cached.get("price") else None
@@ -228,19 +224,19 @@ def fetch_ticker_full(pair: str) -> Optional[dict]:
     if not _check_budget():
         return None
 
-    body = _throttled_public_get(f"https://indodax.com/api/ticker/{pair}_idr")
+    # Binance 24hr ticker: {"lastPrice": "0.1234", "highPrice": "0.1300", "lowPrice": "0.1200", "volume": "1000000", "quoteVolume": "10000"}
+    body = _throttled_public_get(f"https://api.binance.com/api/v3/ticker/24hr?symbol={pair.upper()}USDT")
     if body is None:
         return None
     try:
         data = json.loads(body)
-        t = data["ticker"]
         result = {
-            "last": float(t["last"]),
-            "high": float(t["high"]),
-            "low": float(t["low"]),
-            "buy": float(t["buy"]),
-            "sell": float(t["sell"]),
-            "vol": float(t.get(f"vol_{pair}", 0))
+            "last": float(data["lastPrice"]),
+            "high": float(data["highPrice"]),
+            "low": float(data["lowPrice"]),
+            "buy": float(data["lastPrice"]),  # Binance doesn't have separate bid/ask in 24hr
+            "sell": float(data["lastPrice"]),
+            "vol": float(data.get("volume", 0))
         }
         # Cache it
         _ticker_cache[pair] = {"high": result["high"], "low": result["low"], "ts": time.time()}
@@ -250,7 +246,7 @@ def fetch_ticker_full(pair: str) -> Optional[dict]:
         return None
 
 def fetch_candles(pair: str, interval: str = "1h", limit: int = 100) -> Optional[List[List[float]]]:
-    """Fetch OHLCV candles from Indodax public API with TTL cache."""
+    """Fetch OHLCV candles from Binance public API with TTL cache."""
     cache_key = f"{pair}_{interval}"
     ttl = CANDLE_TTL.get(interval, 600)
     cached = _candle_cache.get(cache_key)
@@ -344,7 +340,7 @@ def fetch_all_prices() -> None:
     missing = [p for p in ALL_TRACKED if p not in prices]
 
     if missing:
-        log.info(f"Missing {len(missing)} pairs from WS. No REST fallback to avoid 429.")
+        log.info(f"Missing {len(missing)} pairs from WS. No REST fallback to avoid rate limits.")
 
     log.info(f"Price initialization complete. {fetched} pairs ready.")
 
@@ -354,6 +350,4 @@ def get_rest_budget_status() -> dict:
         "used": _rest_budget_count,
         "max": _REST_BUDGET_MAX,
         "remaining": max(0, _REST_BUDGET_MAX - _rest_budget_count),
-        "cooldown_active": time.time() < _global_rate_limit_until,
-        "cooldown_remaining": max(0, _global_rate_limit_until - time.time()),
     }

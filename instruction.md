@@ -1,7 +1,7 @@
 # Hermes Trading System — Agent Instructions
 
 ## Overview
-Hermes is an autonomous crypto trading system for Indodax (Indonesian exchange). It runs as a daemon that monitors pairs, executes trades, and manages a portfolio. The AI agent ("Hermes") interacts via Telegram.
+Hermes is an autonomous crypto trading system for Binance. It runs as a daemon that monitors pairs, executes trades, and manages a portfolio. The AI agent ("Hermes") interacts via Telegram.
 
 **You are the AI agent controlling this system.** Your job is to help the owner ("Badra") trade crypto via Telegram chat.
 
@@ -20,12 +20,12 @@ python -m hermes.cli rank-pairs                                 # CLI: rank all 
 ### Key Files
 | File | Purpose |
 |------|---------|
-| `hermes/trading/execution.py` | Buy/sell execution on Indodax |
+| `hermes/trading/execution.py` | Buy/sell execution on Binance |
 | `hermes/trading/positions.py` | Open position monitoring (TP/SL/Trailing) |
 | `hermes/indicators/strategy_new.py` | Strategy V2 signal generation |
 | `hermes/indicators/rsi.py` | RSI calculation (Wilder smoothing) |
-| `hermes/api/websocket.py` | Real-time WebSocket price feed |
-| `hermes/api/rest.py` | REST API calls (prices, candles) |
+| `hermes/api/websocket.py` | Real-time WebSocket price feed (Binance streams) |
+| `hermes/api/rest.py` | REST API calls (prices, candles, Binance) |
 | `hermes/agent/agent.py` | AI agent (MiniMax M2.7) |
 | `hermes/agent/tools.py` | Agent function tools (15 tools) |
 | `hermes/agent/memory.py` | Self-learning memory |
@@ -116,9 +116,9 @@ Trade outcomes are tracked:
 - If Telegram bot fails, check `MINIMAX_API_KEY` in `.env`
 
 ### REST 429 Errors
-- Budget limit: 80 requests/minute to Indodax REST API
+- Budget limit: 1200 requests/minute to Binance REST API
 - Daemon uses WS prices first, only falls back to REST if WS fails
-- `DAEMON_REBALANCE_INTERVAL = 21600` (6 hours) to avoid 429
+- `DAEMON_REBALANCE_INTERVAL = 21600` (6 hours) to stay within limits
 
 ### Telegram Bot Not Responding
 - Check `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`
@@ -129,11 +129,11 @@ Trade outcomes are tracked:
 
 ## Config Values (from `config.py`)
 ```
-MIN_TRADE_RP = 10,000        # Minimum trade in IDR
-MAX_TRADE_RP = 1,000,000     # Max per trade
+MIN_TRADE_USDT = 10          # Minimum trade in USDT
+MAX_TRADE_USDT = 100         # Max per trade
 STOP_LOSS_PCT = 0.05         # 5% stop loss
-TAKE_PROFIT_PCT = 0.10      # 10% take profit
-TRAILING_STOP_PCT = 0.03    # 3% trailing stop
+TAKE_PROFIT_PCT = 0.10       # 10% take profit
+TRAILING_STOP_PCT = 0.03     # 3% trailing stop
 TRAILING_ACTIVATION_PCT = 0.05  # Activate after 5% gain
 FG_BUY_THRESHOLD = 30        # F&G <= 30 → buy zone
 RSI_BUY_THRESHOLD = 35
@@ -153,8 +153,8 @@ hermes/
     bot.py            # Telegram bot polling
   api/
     rest.py           # REST API calls (fetch_candles, fetch_price_rest, update_price)
-    websocket.py      # WS client (Indodax WS)
-    auth.py           # Indodax signed API calls
+    websocket.py      # WS client (Binance streams)
+    auth.py           # Binance HMAC-SHA256 signed API calls
   indicators/
     rsi.py            # RSI calculation
     signals.py        # V1 signals
@@ -164,7 +164,7 @@ hermes/
     volatility.py     # Dynamic position sizing
     technicals.py    # MACD, Bollinger Bands, Supertrend, ATR, ADX (NEW)
   trading/
-    execution.py      # Buy/sell on Indodax
+    execution.py      # Buy/sell on Binance
     positions.py      # TP/SL/Trailing monitoring
     rebalancer.py    # Portfolio rebalancing
     dca.py           # DCA and Grid trading (NEW)
@@ -178,3 +178,24 @@ hermes/
   logging_setup.py    # Logging config
 backtesting.py       # Backtesting engine (NEW)
 ```
+
+---
+
+## DRY_RUN Mode
+
+To test the system without risking real money:
+
+```bash
+# Dry-run daemon (simulated trading)
+python hermes/cli.py daemon --dry-run
+
+# Dry-run one-shot
+python hermes/cli.py one-shot --dry-run
+```
+
+The agent should use `--dry-run` flag when instructed to test or verify trading behavior. Telegram alerts still fire in dry-run mode so the agent can verify notification flow.
+
+**When to use:**
+- Testing new strategies
+- Verifying Telegram alerts work
+- Checking system behavior without real money at risk
