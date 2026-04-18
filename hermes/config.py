@@ -17,7 +17,8 @@ def load_env() -> dict:
                 line = line.strip()
                 if line and not line.startswith('#') and '=' in line:
                     key, _, value = line.partition('=')
-                    env_vars[key.strip()] = value.strip()
+                    # Strip whitespace AND any enclosing quotes
+                    env_vars[key.strip()] = value.strip().strip("'\"")
         except Exception as e:
             print(f"Warning: Failed to load .env file: {e}")
     return env_vars
