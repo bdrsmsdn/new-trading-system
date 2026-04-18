@@ -81,8 +81,13 @@ class HermesAgent:
     """MiniMax-powered trading agent with function calling."""
 
     def __init__(self):
-        """Initialize the agent with MiniMax Anthropic-compatible client."""
-        import anthropic
+        """Initialize the agent with MiniMax Anthropic-compatible client.
+
+        Per MiniMax official docs, the correct way is to set env vars
+        ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY, then init Anthropic()
+        with no arguments. The SDK handles auth headers automatically.
+        """
+        import os
 
         if not MINIMAX_API_KEY:
             raise ValueError(
@@ -90,13 +95,13 @@ class HermesAgent:
                 "Get one from https://platform.minimax.io"
             )
 
-        self.client = anthropic.Anthropic(
-            api_key=MINIMAX_API_KEY,          # SDK requires this (sent as x-api-key)
-            base_url=MINIMAX_BASE_URL,
-            default_headers={
-                "Authorization": f"Bearer {MINIMAX_API_KEY}"  # MiniMax requires this
-            },
-        )
+        # Set env vars as per MiniMax official documentation
+        # https://platform.minimax.io/docs/guides/quickstart-preparation
+        os.environ["ANTHROPIC_BASE_URL"] = MINIMAX_BASE_URL
+        os.environ["ANTHROPIC_API_KEY"] = MINIMAX_API_KEY
+
+        import anthropic
+        self.client = anthropic.Anthropic()
         self.model = MINIMAX_MODEL
         self.conversations: Dict[str, List[Dict]] = {}  # chat_id -> messages
         self.pending_confirmations: Dict[str, Dict] = {}  # chat_id -> pending tool call
