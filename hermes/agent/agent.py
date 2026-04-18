@@ -91,8 +91,11 @@ class HermesAgent:
             )
 
         self.client = anthropic.Anthropic(
-            api_key=MINIMAX_API_KEY,
+            api_key=MINIMAX_API_KEY,          # SDK requires this (sent as x-api-key)
             base_url=MINIMAX_BASE_URL,
+            default_headers={
+                "Authorization": f"Bearer {MINIMAX_API_KEY}"  # MiniMax requires this
+            },
         )
         self.model = MINIMAX_MODEL
         self.conversations: Dict[str, List[Dict]] = {}  # chat_id -> messages
