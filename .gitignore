@@ -9,3 +9,4 @@ __pycache__/
 .nonce
 test_auth.py
 .hermes/
+.claude/
