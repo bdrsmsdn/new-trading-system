@@ -7,3 +7,5 @@ __pycache__/
 !SPEC.md
 *.pid
 .nonce
+test_auth.py
+.hermes/

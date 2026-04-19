@@ -36,7 +36,7 @@ def authorized(func):
         chat_id = str(update.effective_chat.id)
         if chat_id != str(TELEGRAM_CHAT_ID):
             await update.message.reply_text(
-                "⛔ Unauthorized. Bot ini hanya untuk Badra."
+                "⛔ Unauthorized. Bot ini hanya untuk pemilik bot."
             )
             log.warning(f"[BOT] Unauthorized access from chat_id={chat_id}")
             return
@@ -197,7 +197,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     welcome = (
         "🤖 **Hermes AI Trading Agent**\n\n"
-        "Halo Badra! Gue Hermes, AI trading assistant lo.\n\n"
+        "Halo! Gue Hermes, AI trading assistant lo.\n\n"
         "**Yang bisa gue lakuin:**\n"
         "📊 Cek market & sentiment (F&G, regime)\n"
         "📈 Analisis pair & signal trading\n"

@@ -123,7 +123,7 @@ class ColorFormatter(logging.Formatter):
         ❌ / FAILED   → red
         BUY           → bright green
         SELL          → bright red / magenta
-        Rp xxx,xxx    → yellow
+        Rp 1,000,000  → yellow
         [TAG]         → magenta brackets with cyan tag
         +X.X%         → green,  -X.X% → red
     """
