@@ -79,7 +79,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_chat_action(ChatAction.TYPING)
 
     agent: HermesAgent = context.bot_data["agent"]
-    response = await agent.chat(chat_id, "Kasih gue ringkasan cepat: balance IDR, posisi terbuka (kalau ada), Fear & Greed, dan market regime sekarang. Singkat aja.")
+    response = await agent.chat(chat_id, "Kasih gue ringkasan cepat: balance USDT, posisi terbuka (kalau ada), Fear & Greed, dan market regime sekarang. Singkat aja.")
     await _send_long_message(update, response)
 
 

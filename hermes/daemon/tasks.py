@@ -373,7 +373,7 @@ async def run_daemon(get_balance_func, dry_run: bool = False):
     if dry_run:
         log.info("DRY_RUN MODE — No real orders will be executed")
     
-    # Fetch F&G first (uses requests directly, not Indodax API)
+    # Fetch F&G first
     fetch_fear_greed()
     log.info(f"Fear & Greed: {state.fg_value} ({state.fg_class})")
     

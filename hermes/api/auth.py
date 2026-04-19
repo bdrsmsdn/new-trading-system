@@ -145,7 +145,7 @@ def binance_signed_request(endpoint: str, params: dict = None, method: str = "PO
 # Backwards compatibility alias for code that calls api_call()
 def api_call(method: str, **params) -> dict:
     """Legacy compatibility wrapper — routes to binance_signed_request."""
-    # Map Indodax method names to Binance endpoints
+    # Map legacy method names to Binance endpoints
     if method == "getInfo":
         return binance_signed_request("/api/v3/account", {}, method="GET")
     elif method == "trade":

@@ -96,8 +96,8 @@ class AgentMemory:
 
         Args:
             pair: Trading pair
-            entry_price: Entry price in IDR
-            exit_price: Exit price in IDR
+            entry_price: Entry price in USDT
+            exit_price: Exit price in USDT
             pnl_pct: Profit/loss percentage
             hold_duration_hours: How long the position was held
             exit_reason: Why it was closed (TP, SL, trailing, manual)

@@ -16,7 +16,7 @@ from hermes.logging_setup import log
 TOOLS = [
     {
         "name": "get_price",
-        "description": "Get the current live price for a crypto trading pair on Indodax. Returns the price in IDR (Indonesian Rupiah).",
+        "description": "Get the current live price for a crypto trading pair on Binance. Returns the price in USDT.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -62,7 +62,7 @@ TOOLS = [
     },
     {
         "name": "get_balance",
-        "description": "Get the current account balance including IDR (Indonesian Rupiah) cash balance and all coin holdings on Indodax.",
+        "description": "Get the current account balance including USDT cash balance and all coin holdings on Binance.",
         "input_schema": {
             "type": "object",
             "properties": {},
@@ -125,7 +125,7 @@ TOOLS = [
     },
     {
         "name": "execute_buy",
-        "description": "Execute a BUY order for a crypto pair on Indodax. Uses dynamic position sizing based on volatility. IMPORTANT: This executes a REAL trade with real money. The minimum trade is Rp 10,000.",
+        "description": "Execute a BUY order for a crypto pair on Binance. Uses dynamic position sizing based on volatility. IMPORTANT: This executes a REAL trade with real money. The minimum trade is $1.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -143,7 +143,7 @@ TOOLS = [
     },
     {
         "name": "execute_sell",
-        "description": "Execute a SELL order for a crypto pair on Indodax. IMPORTANT: This executes a REAL trade with real money. You must specify quantity.",
+        "description": "Execute a SELL order for a crypto pair on Binance. IMPORTANT: This executes a REAL trade with real money. You must specify quantity.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -219,7 +219,7 @@ def _execute_get_price(pair: str) -> dict:
     if not price:
         price = fetch_price_rest(pair)
     if price:
-        return {"pair": pair, "price": price, "currency": "IDR"}
+        return {"pair": pair, "price": price, "currency": "USDT"}
     return {"error": "no_price", "pair": pair}
 
 

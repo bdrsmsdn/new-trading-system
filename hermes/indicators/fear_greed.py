@@ -6,7 +6,7 @@ from hermes.state import state
 
 def fetch_fear_greed() -> Tuple[int, str]:
     """Fetch Fear & Greed index from alternative.me.
-    Uses requests directly — NOT the Indodax throttle, since this is a different API."""
+    Uses requests directly for alternative data."""
     try:
         resp = requests.get(
             "https://api.alternative.me/fng/?limit=1",

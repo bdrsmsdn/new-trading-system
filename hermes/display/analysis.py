@@ -81,7 +81,7 @@ def print_analysis(get_balance_func, pair=None) -> List[Dict]:
     log.info(f"Hermes Trader Analysis — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} WIB")
     log.info("=" * 60)
     
-    fg_val, fg_class = fetch_fear_greed()  # Uses requests directly, not Indodax
+    fg_val, fg_class = fetch_fear_greed()
     regime, regime_desc = get_market_regime()
     regime_emoji = {"BULL": "🐂", "BEAR": "🐻", "SIDEWAYS": "↔️"}.get(regime, "?")
     log.info(f"Fear & Greed: {fg_val} ({fg_class}) {regime_emoji} {regime}")
@@ -98,7 +98,7 @@ def print_analysis(get_balance_func, pair=None) -> List[Dict]:
             log.info("\n🔮 Polymarket Vibes: unavailable")
     
     balance = get_balance_func(use_cache=False)
-    log.info(f"IDR Balance: Rp {balance.get('idr', 0):,.0f}")
+    log.info(f"USDT Balance: ${balance.get('usdt', 0):,.2f}")
     
     from hermes.api.rest import get_rest_budget_status
     budget = get_rest_budget_status()
