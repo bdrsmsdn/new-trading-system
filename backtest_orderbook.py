@@ -185,8 +185,8 @@ for j, idx in enumerate(range(0, len(eq), step)):
 print(f"""
 ======================================================================
 ⚠️  NOTES:
-  - Synthetic data (no real orderbook - Indodax REST API doesn't expose it)
+  - Synthetic data (simulated orderbook for backtesting)
   - Volume spike = orderbook thickness PROXY (high vol = defended levels)
-  - Real BID/ASK depth requires WebSocket connection to Indodax
+  - Real BID/ASK depth requires exchange WebSocket connection
   - Try tuning RSI thresholds for different asset volatility profiles
 ======================================================================""")
