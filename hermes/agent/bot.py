@@ -21,6 +21,7 @@ from hermes.logging_setup import log
 from hermes.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from hermes.agent.agent import HermesAgent
 from hermes.agent.memory import agent_memory
+from hermes.agent.tools import execute_tool, CONFIRM_REQUIRED
 
 # Suppress overly verbose telegram library logs
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -41,6 +42,152 @@ def authorized(func):
             return
         return await func(update, context)
     return wrapper
+
+
+# ─── Direct Command Parser ─────────────────────────────────────────────────────
+
+import re
+import json
+
+def _parse_direct_command(text: str) -> tuple[str, dict] | None:
+    """Parse text into (tool_name, tool_input) if it matches a direct command.
+
+    Returns None if text doesn't match any direct command pattern.
+    Supports both slash commands (/buy) and plain text (buy doge).
+    """
+    text = text.strip()
+    lower = text.lower()
+
+    # /buy [pair] or buy [pair]
+    m = re.match(r'^(?:/buy|buy)\s+(\w+)$', lower)
+    if m:
+        pair = m.group(1)
+        return "execute_buy", {"pair": pair}
+
+    # /sell [pair] [qty] or sell [pair] [qty]
+    m = re.match(r'^(?:/sell|sell)\s+(\w+)\s+([\d.]+)$', lower)
+    if m:
+        pair = m.group(1)
+        qty = float(m.group(2))
+        return "execute_sell", {"pair": pair, "qty": qty}
+
+    # /signal [pair] or signal [pair]
+    m = re.match(r'^(?:/signal|signal)\s+(\w+)$', lower)
+    if m:
+        pair = m.group(1)
+        return "get_signal_v2", {"pair": pair}
+
+    # /price [pair] or price [pair]
+    m = re.match(r'^(?:/price|price)\s+(\w+)$', lower)
+    if m:
+        pair = m.group(1)
+        return "get_price", {"pair": pair}
+
+    # /balance or balance
+    if re.match(r'^(?:/balance|balance)$', lower):
+        return "get_balance", {}
+
+    # /rank or rank
+    if re.match(r'^(?:/rank|rank)$', lower):
+        return "rank_pairs", {}
+
+    # /portfolio or portfolio
+    if re.match(r'^(?:/portfolio|portfolio)$', lower):
+        return "get_portfolio", {}
+
+    # /fear or fear
+    if re.match(r'^(?:/fear|fear)$', lower):
+        return "get_fear_greed", {}
+
+    # /positions or positions
+    if re.match(r'^(?:/positions|positions)$', lower):
+        return "check_positions", {}
+
+    return None
+
+
+def _execute_direct_command(tool_name: str, tool_input: dict) -> str:
+    """Execute a tool directly and format result for Telegram."""
+    try:
+        result = execute_tool(tool_name, tool_input)
+        data = json.loads(result)
+
+        if "error" in data:
+            return f"⚠️ Error: {data['error']}"
+
+        # Format success results based on tool type
+        if tool_name == "execute_buy":
+            if data.get("success"):
+                return f"✅ Buy berhasil!\n💰 Spent: {data.get('idr_spent', 0):,.0f} IDR\n📦 Pair: {data.get('pair', '').upper()}\n💵 Price: {data.get('price', 0):,.0f} IDR"
+            return f"❌ Buy gagal: {data.get('error', 'unknown')}"
+
+        elif tool_name == "execute_sell":
+            if data.get("success"):
+                return f"✅ Sell berhasil!\n📦 Pair: {data.get('pair', '').upper()}\n💵 Qty: {data.get('qty', 0)}\n💵 Price: {data.get('price', 0):,.0f} IDR"
+            return f"❌ Sell gagal: {data.get('error', 'unknown')}"
+
+        elif tool_name == "get_price":
+            return f"💵 {data.get('pair', '').upper()}: {data.get('price', 0):,.0f} IDR"
+
+        elif tool_name == "get_signal_v2":
+            sig = data.get("signal", "N/A")
+            conf = data.get("confidence", "N/A")
+            entry = data.get("entry_price", 0)
+            sl = data.get("stop_loss", 0)
+            tp = data.get("take_profit", 0)
+            rsi = data.get("rsi", "N/A")
+            daily_pos = data.get("daily_pos", "N/A")
+            emoji = {"LONG": "🟢", "SHORT": "🔴", "NO TRADE SETUP": "⚪"}.get(sig, "❓")
+            return (
+                f"{emoji} **{sig}** (confidence: {conf})\n\n"
+                f"📊 RSI: {rsi}\n📈 Daily Pos: {daily_pos}%\n"
+                f"💰 Entry: {entry:,.0f}\n🛑 SL: {sl:,.0f}\n🎯 TP: {tp:,.0f}\n\n"
+                f"Reasons:\n{data.get('reasons', 'N/A')}"
+            )
+
+        elif tool_name == "get_balance":
+            idr = data.get("idr", 0)
+            usdt = data.get("usdt", 0)
+            lines = [f"💰 *Balance:*", f"• IDR: {idr:,.0f}", f"• USDT: {usdt:,.2f}"]
+            if data.get("holdings"):
+                lines.append("\n📦 *Holdings:*")
+                for h in data["holdings"]:
+                    lines.append(f"• {h['coin'].upper()}: {h['available']} (≈{h.get('idr_value', 0):,.0f} IDR)")
+            return "\n".join(lines)
+
+        elif tool_name == "rank_pairs":
+            rankings = data.get("rankings", [])
+            if not rankings:
+                return "📊 No rankings available"
+            lines = ["📊 *Top Pairs:*"]
+            for r in rankings[:10]:
+                sig = r.get("signal", "?")
+                emoji = {"STRONG_BUY": "🚀", "BUY": "🟢", "HOLD": "⚪", "SELL": "🔴", "STRONG_SELL": "💥"}.get(sig, "❓")
+                lines.append(f"{emoji} {r['pair'].upper()}: {sig} (score: {r.get('score', 0):.1f})")
+            return "\n".join(lines)
+
+        elif tool_name == "get_fear_greed":
+            return f"😱 *Fear & Greed:* {data.get('fear_greed_value', 'N/A')} — {data.get('classification', 'N/A')}"
+
+        elif tool_name == "check_positions":
+            positions = data.get("positions", [])
+            if not positions:
+                return "📭 No open positions"
+            lines = ["📦 *Open Positions:*"]
+            for p in positions:
+                pnl = p.get("pnl_pct", 0)
+                emoji = "🟢" if pnl >= 0 else "🔴"
+                lines.append(f"{emoji} {p['pair'].upper()}: {p['qty']} @ {p['entry_price']:,.0f} (PnL: {pnl:+.2f}%)")
+            return "\n".join(lines)
+
+        elif tool_name == "get_portfolio":
+            return data.get("summary", str(data))
+
+        else:
+            return json.dumps(data, indent=2)
+
+    except Exception as e:
+        return f"⚠️ Error executing {tool_name}: {str(e)}"
 
 
 # ─── Bot Handlers ──────────────────────────────────────────────────────────────
@@ -134,7 +281,7 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @authorized
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle free-text messages — forward to AI agent."""
+    """Handle free-text messages — try direct command first, fall back to AI agent."""
     chat_id = str(update.effective_chat.id)
     user_text = update.message.text
 
@@ -143,7 +290,56 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     log.info(f"[BOT] Message from {chat_id}: {user_text[:100]}...")
 
-    # Show typing indicator
+    # ─── 0. Check for pending confirmation response ───
+    pending_cmds = context.bot_data.get("pending_cmds", {})
+    if chat_id in pending_cmds:
+        normalized = user_text.strip().lower()
+        if normalized in ("ya", "yes", "ok", "oke", "confirm", "y", "gas", " lanjut", "eksekusi"):
+            # Execute the pending command
+            pending = pending_cmds.pop(chat_id)
+            tool_name = pending["tool_name"]
+            tool_input = pending["tool_input"]
+            log.info(f"[BOT] Confirmed direct command: {tool_name}({tool_input})")
+            await update.message.reply_chat_action(ChatAction.TYPING)
+            result = _execute_direct_command(tool_name, tool_input)
+            await _send_long_message(update, result)
+            return
+        elif normalized in ("batal", "cancel", "no", "tidak"):
+            pending_cmds.pop(chat_id, None)
+            await update.message.reply_text("❌ Cancelled.")
+            return
+        # Not a confirmation word — fall through to process as command
+
+    # ─── 1. Try direct command first (no AI needed) ───
+    direct = _parse_direct_command(user_text)
+    if direct:
+        tool_name, tool_input = direct
+        log.info(f"[BOT] Direct command: {tool_name}({tool_input})")
+
+        # Buy/Sell need confirmation
+        if tool_name in CONFIRM_REQUIRED:
+            pair = tool_input.get("pair", "?").upper()
+            qty = tool_input.get("qty", 0)
+            if tool_name == "execute_buy":
+                msg = f"⚠️ **Konfirmasi BUY {pair}**\n\nMau eksekusi beli {pair} sekarang?\n\nKetik **ya** untuk konfirmasi atau **batal**."
+            else:
+                msg = f"⚠️ **Konfirmasi SELL {pair}** ({qty} coin)\n\nMau jual sekarang?\n\nKetik **ya** untuk konfirmasi atau **batal**."
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+            # Store pending confirmation in context for later
+            context.bot_data.setdefault("pending_cmds", {})[chat_id] = {
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+            }
+            return
+
+        # Execute direct command
+        await update.message.reply_chat_action(ChatAction.TYPING)
+        result = _execute_direct_command(tool_name, tool_input)
+        await _send_long_message(update, result)
+        return
+
+    # ─── 2. Fall back to AI agent ───
     await update.message.reply_chat_action(ChatAction.TYPING)
 
     agent: HermesAgent = context.bot_data["agent"]
