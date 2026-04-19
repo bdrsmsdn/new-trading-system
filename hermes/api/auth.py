@@ -151,9 +151,12 @@ def api_call(method: str, **params) -> dict:
     elif method == "trade":
         # params: pair, type (buy/sell), quantity, price, etc.
         # Build Binance order params
-        symbol = params.get("pair", "").upper().replace("_", "")  # doge_idr -> DOGEIDR (but we use USDT)
-        # For Binance: symbol should be like DOGEUSDT
-        symbol = symbol.replace("IDR", "USDT") if "IDR" in symbol else f"{symbol}USDT"
+        symbol = params.get("pair", "").upper().replace("_", "")  # doge_idr -> DOGEIDR
+        # Handle IDR -> USDT conversion, but don't double-add USDT suffix
+        if "IDR" in symbol:
+            symbol = symbol.replace("IDR", "USDT")
+        elif not symbol.endswith("USDT"):
+            symbol = f"{symbol}USDT"
 
         order_params = {
             "symbol": symbol,

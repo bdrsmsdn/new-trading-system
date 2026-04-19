@@ -48,11 +48,11 @@ def execute_buy(pair: str, price: float, usdt_balance: float, dry_run: bool = Fa
         return True, ""
 
     # Binance market buy: symbol, side, type, quoteOrderQty (USDT amount)
-    # quoteOrderQty must be a number (not int-truncated) for proper sizing
+    # quoteOrderQty must have max 2 decimal places for Binance
     result = api_call("trade",
         pair=f"{pair.upper()}USDT",  # e.g., DOGEUSDT
         type="buy",
-        quoteOrderQty=buy_amount_usdt,  # keep as float, not int
+        quoteOrderQty=round(buy_amount_usdt, 2),
     )
 
     if result.get("status") == "FILLED" or result.get("success") == 1:

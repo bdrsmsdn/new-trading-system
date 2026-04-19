@@ -284,16 +284,21 @@ class HermesAgent:
             log.info(f"[AGENT] User confirmed {tool_name}: {tool_input}")
             result = execute_tool(tool_name, tool_input)
 
-            # Log to memory
-            pair = tool_input.get("pair", "?")
-            direction = "BUY" if tool_name == "execute_buy" else "SELL"
-            agent_memory.log_trade_decision(
-                pair=pair,
-                direction=direction,
-                signal_data=tool_input,
-                context={"source": "telegram_agent"},
-                confirmed=True
-            )
+            # Log to memory only if trade succeeded
+            try:
+                result_data = json.loads(result)
+                if result_data.get("success"):
+                    pair = tool_input.get("pair", "?")
+                    direction = "BUY" if tool_name == "execute_buy" else "SELL"
+                    agent_memory.log_trade_decision(
+                        pair=pair,
+                        direction=direction,
+                        signal_data=tool_input,
+                        context={"source": "telegram_agent"},
+                        confirmed=True
+                    )
+            except (json.JSONDecodeError, Exception):
+                pass
 
             # Add tool result to history
             messages.append({
