@@ -348,8 +348,10 @@ def _execute_buy(pair: str, price: float = None) -> dict:
     if not price:
         return {"error": "no_price", "pair": pair}
 
-    success = execute_buy(pair, price, usdt)
-    return {"success": success, "pair": pair, "price": price, "idr_spent": idr if success else 0}
+    success, error_msg = execute_buy(pair, price, usdt)
+    if success:
+        return {"success": True, "pair": pair, "price": price, "idr_spent": usdt}
+    return {"success": False, "pair": pair, "price": price, "error": error_msg}
 
 
 def _execute_sell(pair: str, qty: float, price: float = None) -> dict:
@@ -368,8 +370,10 @@ def _execute_sell(pair: str, qty: float, price: float = None) -> dict:
     if idr_value < MIN_TRADE_USDT:
         return {"error": "below_minimum_trade", "idr_value": idr_value}
 
-    success = execute_sell(pair, price, qty, reason="agent_chat")
-    return {"success": success, "pair": pair, "price": price, "qty": qty}
+    success, error_msg = execute_sell(pair, price, qty, reason="agent_chat")
+    if success:
+        return {"success": True, "pair": pair, "price": price, "qty": qty}
+    return {"success": False, "pair": pair, "price": price, "error": error_msg}
 
 
 def _execute_get_trade_history(count: int = 10) -> dict:

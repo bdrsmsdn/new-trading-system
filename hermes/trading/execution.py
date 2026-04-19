@@ -17,9 +17,10 @@ def format_coin(amount: float, symbol: str) -> str:
     else:
         return f"{amount:.2f} {symbol}"
 
-def execute_buy(pair: str, price: float, usdt_balance: float, dry_run: bool = False) -> bool:
+def execute_buy(pair: str, price: float, usdt_balance: float, dry_run: bool = False) -> tuple[bool, str]:
     """Execute a buy order on Binance with dynamic position sizing.
 
+    Returns (success, error_message).
     Binance market buy uses quoteOrderQty for USDT amount.
     """
     from hermes.state import prices as _prices_cache
@@ -33,8 +34,9 @@ def execute_buy(pair: str, price: float, usdt_balance: float, dry_run: bool = Fa
 
     buy_amount_usdt = get_dynamic_position_size(pair, price, usdt_balance)
     if buy_amount_usdt <= 0:
-        log.info(f"Skipping {pair}: insufficient balance for minimum trade")
-        return False
+        msg = f"Skipping {pair}: insufficient balance (${usdt_balance:.2f}) for minimum trade (${MIN_TRADE_USDT:.2f})"
+        log.info(msg)
+        return False, msg
 
     vol_factor = calculate_volatility(pair, price)
     log.info(f"BUY order (dynamic, vol_factor={vol_factor:.2f}): ${buy_amount_usdt:.2f} @ ${price:.4f}")
@@ -43,13 +45,14 @@ def execute_buy(pair: str, price: float, usdt_balance: float, dry_run: bool = Fa
         buy_amount_usdt = get_dynamic_position_size(pair, price, usdt_balance)
         log.info(f"[DRY_RUN] BUY: {pair} @ ${price:.4f}, qty_usdt=${buy_amount_usdt:.2f}, expected_coins={buy_amount_usdt/price:.2f}")
         _simulate_buy(pair, price, buy_amount_usdt)
-        return True
+        return True, ""
 
     # Binance market buy: symbol, side, type, quoteOrderQty (USDT amount)
+    # quoteOrderQty must be a number (not int-truncated) for proper sizing
     result = api_call("trade",
         pair=f"{pair.upper()}USDT",  # e.g., DOGEUSDT
         type="buy",
-        quoteOrderQty=int(buy_amount_usdt),
+        quoteOrderQty=buy_amount_usdt,  # keep as float, not int
     )
 
     if result.get("status") == "FILLED" or result.get("success") == 1:
@@ -75,14 +78,16 @@ def execute_buy(pair: str, price: float, usdt_balance: float, dry_run: bool = Fa
         }
         state.last_trade_time[pair] = time.time()
         state.save()
-        return True
+        return True, ""
     else:
-        log.error(f"❌ BUY FAILED: {result.get('msg', result)}")
-        return False
+        error_msg = result.get('msg') or result.get('error') or str(result)
+        log.error(f"❌ BUY FAILED: {error_msg}")
+        return False, error_msg
 
-def execute_sell(pair: str, price: float, qty: float, reason: str = "", order_type: str = "limit", dry_run: bool = False) -> bool:
+def execute_sell(pair: str, price: float, qty: float, reason: str = "", order_type: str = "limit", dry_run: bool = False) -> tuple[bool, str]:
     """Execute a sell order on Binance.
 
+    Returns (success, error_message).
     Args:
         pair: Trading pair (e.g., 'DOGE')
         price: Reference price (not used for market orders)
@@ -105,16 +110,18 @@ def execute_sell(pair: str, price: float, qty: float, reason: str = "", order_ty
         usdt_value = qty * price
         log.info(f"[DRY_RUN] SELL: {pair} @ ${price:.4f}, qty={qty}, usdt_value=${usdt_value:.2f}, reason={reason}")
         _simulate_sell(pair, price, qty, reason)
-        return True
+        return True, ""
 
     # Validate qty won't fail due to being too small
     usdt_value = qty * price
     if usdt_value < MIN_TRADE_USDT:
-        log.warning(f"SELL SKIPPED: USDT value (${usdt_value:.2f}) below minimum ${MIN_TRADE_USDT}")
-        return False
+        msg = f"SELL SKIPPED: USDT value (${usdt_value:.2f}) below minimum ${MIN_TRADE_USDT}"
+        log.warning(msg)
+        return False, msg
     if qty <= 0:
-        log.warning(f"SELL SKIPPED: qty ({qty}) is zero or negative")
-        return False
+        msg = f"SELL SKIPPED: qty ({qty}) is zero or negative"
+        log.warning(msg)
+        return False, msg
 
     # Round qty to valid decimal places for this pair
     decimals = PAIR_DECIMAL_PLACES.get(pair.upper(), 4)
@@ -167,10 +174,11 @@ def execute_sell(pair: str, price: float, qty: float, reason: str = "", order_ty
             del state.positions[pair]
         state.last_trade_time[pair] = time.time()
         state.save()
-        return True
+        return True, ""
     else:
-        log.error(f"❌ SELL FAILED: {result.get('msg', result)}")
-        return False
+        error_msg = result.get('msg') or result.get('error') or str(result)
+        log.error(f"❌ SELL FAILED: {error_msg}")
+        return False, error_msg
 
 def _simulate_buy(pair: str, price: float, usdt_amount: float):
     """Simulate buy in dry-run mode — no API call, update state."""

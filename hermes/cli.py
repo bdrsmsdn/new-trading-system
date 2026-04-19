@@ -143,7 +143,7 @@ def main():
         if usdt_value < MIN_TRADE_USDT:
             to_json({"error": "below_minimum_trade", "message": f"Sell order value (${usdt_value:.2f}) below minimum ($10)"})
             return
-        success = execute_sell(args.pair, price, qty, reason="cli_manual")
+        success, _ = execute_sell(args.pair, price, qty, reason="cli_manual")
         to_json({"success": success})
         
     elif args.command == "fear-greed":
