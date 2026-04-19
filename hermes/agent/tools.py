@@ -348,6 +348,10 @@ def _execute_buy(pair: str, price: float = None) -> dict:
     if not price:
         return {"error": "no_price", "pair": pair}
 
+    # Guard: reject obviously wrong prices (e.g., AI hallucinating price)
+    if price < 0.00000001:
+        return {"error": "invalid_price", "price_provided": price, "hint": "Price too small. Use /price to get current market price."}
+
     success, error_msg = execute_buy(pair, price, usdt)
     if success:
         return {"success": True, "pair": pair, "price": price, "idr_spent": usdt}
