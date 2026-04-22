@@ -123,6 +123,17 @@ def execute_sell(pair: str, price: float, qty: float, reason: str = "", order_ty
         log.warning(msg)
         return False, msg
 
+    # Pre-emptive stale position cleanup: if pair is in state.positions but we hold 0 of it, remove it
+    if pair in state.positions:
+        from hermes.api.balance import get_balance
+        balances = get_balance(use_cache=True)
+        coin_balance = balances.get(pair.lower(), 0)
+        if coin_balance == 0:
+            log.warning(f"Removing stale position {pair} from state — balance is 0, cannot sell")
+            del state.positions[pair]
+            state.save()
+            return False, f"Stale position {pair} removed: zero balance"
+
     # Round qty to valid decimal places for this pair
     decimals = PAIR_DECIMAL_PLACES.get(pair.upper(), 4)
     if decimals == 0:
@@ -178,6 +189,10 @@ def execute_sell(pair: str, price: float, qty: float, reason: str = "", order_ty
     else:
         error_msg = result.get('msg') or result.get('error') or str(result)
         log.error(f"❌ SELL FAILED: {error_msg}")
+        if ("-2010" in error_msg or "insufficient balance" in error_msg.lower()) and pair in state.positions:
+            log.warning(f"Removing stale position {pair} from state — SELL failed with insufficient balance")
+            del state.positions[pair]
+            state.save()
         return False, error_msg
 
 def _simulate_buy(pair: str, price: float, usdt_amount: float):
