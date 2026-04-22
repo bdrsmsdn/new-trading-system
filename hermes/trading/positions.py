@@ -5,6 +5,7 @@ from hermes.state import state, _multi_rsi_cache
 from hermes.indicators.rsi import get_rsi, get_multi_rsi
 from hermes.indicators.signals import get_signal
 from hermes.trading.execution import execute_sell, execute_buy
+from hermes.api.balance import get_balance
 from hermes.config import STOP_LOSS_PCT, TAKE_PROFIT_PCT, TRAILING_ACTIVATION_PCT, TRAILING_STOP_PCT, TRADE_COOLDOWN, MIN_TRADE_USDT
 
 _MULTI_RSI_TTL = 300  # Match rsi.py TTL
@@ -53,6 +54,15 @@ def check_open_positions(current_price: float, balance: Dict[str, float]) -> Non
                 multi_rsi = {"3m": get_rsi(pair), "1h": 50.0, "4h": 50.0}
             signal, score, reasons = get_signal(pair, current_price, multi_rsi)
             if signal in ["STRONG_SELL", "SELL"]:
+                coin = pair.replace("USDT", "")
+                balances = get_balance(use_cache=False)
+                coin_lower = coin.lower()
+                balance = balances.get(coin_lower, 0)
+                if balance == 0:
+                    log.warning(f"Stale position {pair} — Binance balance is 0, skipping sell and removing from state")
+                    del state.positions[pair]
+                    state.save()
+                    continue
                 log.info(f"Signal exit for {pair}: {signal} with +{pnl_pct*100:.1f}%")
                 execute_sell(pair, current_price, qty, f"Signal: {signal}")
 

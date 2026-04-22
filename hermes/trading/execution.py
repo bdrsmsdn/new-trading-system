@@ -127,7 +127,8 @@ def execute_sell(pair: str, price: float, qty: float, reason: str = "", order_ty
     if pair in state.positions:
         from hermes.api.balance import get_balance
         balances = get_balance(use_cache=True)
-        coin_balance = balances.get(pair.lower(), 0)
+        coin = pair.replace("USDT", "")
+        coin_balance = balances.get(coin.lower(), 0)
         if coin_balance == 0:
             log.warning(f"Removing stale position {pair} from state — balance is 0, cannot sell")
             del state.positions[pair]

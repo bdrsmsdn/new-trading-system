@@ -362,6 +362,32 @@ async def daemon_dca(get_balance_func):
         except Exception as e:
             log.error(f"[DCA] Daemon error: {e}")
 
+def validate_positions_on_startup(get_balance_func):
+    """Remove stale positions from state that no longer exist on Binance.
+
+    Called on daemon startup to prevent failed SELL attempts due to positions
+    that were manually sold or closed externally.
+    """
+    if not state.positions:
+        return
+
+    balances = get_balance_func(use_cache=False)
+    removed = []
+    for pair in list(state.positions.keys()):
+        # Extract coin name from pair (e.g., "FLOKI" from "FLOKIUSDT")
+        coin = pair.upper().replace("USDT", "")
+        coin_lower = coin.lower()
+        balance = balances.get(coin_lower, 0)
+        if balance == 0:
+            log.warning(f"Removed stale position {pair} — balance on Binance is 0")
+            del state.positions[pair]
+            removed.append(pair)
+
+    if removed:
+        state.save()
+        log.info(f"Cleaned {len(removed)} stale position(s): {', '.join(removed)}")
+
+
 async def run_daemon(get_balance_func, dry_run: bool = False):
     """Run the trading daemon."""
     state.dry_run = dry_run
@@ -372,10 +398,13 @@ async def run_daemon(get_balance_func, dry_run: bool = False):
     log.info(f"Max trade: Rp {MAX_TRADE_USDT:,} | Stop Loss: {STOP_LOSS_PCT*100:.0f}% | Take Profit: {TAKE_PROFIT_PCT*100:.0f}%")
     if dry_run:
         log.info("DRY_RUN MODE — No real orders will be executed")
-    
+
     # Fetch F&G first
     fetch_fear_greed()
     log.info(f"Fear & Greed: {state.fg_value} ({state.fg_class})")
+
+    # Validate positions against Binance — remove stale entries before trading starts
+    validate_positions_on_startup(get_balance_func)
     
     # Clear stale RSI cache and state from previous run
     _multi_rsi_cache.clear()
