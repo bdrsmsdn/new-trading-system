@@ -205,10 +205,13 @@ class HermesAgent:
                     })
 
             # Add assistant response to history (include ALL blocks per MiniMax docs)
-            messages.append({
-                "role": "assistant",
-                "content": assistant_content
-            })
+            # Only append if we're continuing (not returning early for confirmation)
+            # to avoid orphaned tool_use blocks in history causing 400 errors
+            if not (tool_calls and any(t.name in CONFIRM_REQUIRED for t in tool_calls)):
+                messages.append({
+                    "role": "assistant",
+                    "content": assistant_content
+                })
 
             # If no tool calls, we're done
             if not tool_calls:
@@ -242,7 +245,7 @@ class HermesAgent:
                     else:
                         confirm_msg = f"⚠️ Konfirmasi {tool_name}?\n\nKetik **ya** atau **batal**."
 
-                    # Return text + confirmation
+                    # Return text + confirmation (DO NOT add orphaned tool_use to messages)
                     prefix = "\n".join(text_parts) + "\n\n" if text_parts else ""
                     return prefix + confirm_msg
 
