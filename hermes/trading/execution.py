@@ -2,9 +2,81 @@ import math
 import time
 from hermes.logging_setup import log
 from hermes.state import state
-from hermes.api.auth import api_call
+from hermes.api.auth import api_call, binance_signed_request
 from hermes.indicators.volatility import get_dynamic_position_size, calculate_volatility
 from hermes.config import MIN_TRADE_USDT, FEE_BUFFER, STOP_LOSS_PCT, TAKE_PROFIT_PCT, PAIR_DECIMAL_PLACES
+
+
+# Cache for exchange info LOT_SIZE constraints
+_lot_size_cache = {}
+
+
+def _get_lot_size_filter(pair: str) -> dict:
+    """Fetch LOT_SIZE filter for a symbol from Binance and cache it."""
+    if pair in _lot_size_cache:
+        return _lot_size_cache[pair]
+
+    symbol = f"{pair.upper()}USDT"
+    try:
+        # Binance public endpoint, no auth needed
+        import requests
+        resp = requests.get(
+            "https://api.binance.com/api/v3/exchangeInfo",
+            params={"symbol": symbol},
+            timeout=5
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            for f in data.get("symbols", []):
+                if f["symbol"] == symbol:
+                    for filter_block in f.get("filters", []):
+                        if filter_block["filterType"] == "LOT_SIZE":
+                            _lot_size_cache[pair] = {
+                                "minQty": float(filter_block["minQty"]),
+                                "maxQty": float(filter_block["maxQty"]),
+                                "stepSize": float(filter_block["stepSize"]),
+                            }
+                            return _lot_size_cache[pair]
+        _lot_size_cache[pair] = None
+    except Exception as e:
+        log.warning(f"Failed to fetch LOT_SIZE for {pair}: {e}")
+        _lot_size_cache[pair] = None
+    return None
+
+
+def _round_qty_to_lot_size(qty: float, pair: str) -> float:
+    """Round quantity to conform to Binance LOT_SIZE filter."""
+    lot_size = _get_lot_size_filter(pair)
+    if not lot_size:
+        # Fallback: use PAIR_DECIMAL_PLACES
+        decimals = PAIR_DECIMAL_PLACES.get(pair.upper(), 4)
+        if decimals == 0:
+            return math.floor(qty)
+        return math.floor(qty * (10 ** decimals)) / (10 ** decimals)
+
+    min_qty = lot_size["minQty"]
+    max_qty = lot_size["maxQty"]
+    step_size = lot_size["stepSize"]
+
+    # Calculate number of decimal places in stepSize
+    step_str = f"{step_size:f}".rstrip('0')
+    step_decimals = len(step_str.split('.')[-1]) if '.' in step_str else 0
+
+    # Round to step size: floor(qty / step) * step
+    qty_rounded = math.floor(qty / step_size) * step_size
+
+    # Ensure minimum
+    if qty_rounded < min_qty:
+        qty_rounded = min_qty
+
+    # Ensure maximum
+    if qty_rounded > max_qty:
+        qty_rounded = max_qty
+
+    # Round to step decimals
+    if step_decimals == 0:
+        return math.floor(qty_rounded)
+    return math.floor(qty_rounded * (10 ** step_decimals)) / (10 ** step_decimals)
 
 def format_coin(amount: float, symbol: str) -> str:
     """Format coin amount for display."""
@@ -135,12 +207,16 @@ def execute_sell(pair: str, price: float, qty: float, reason: str = "", order_ty
             state.save()
             return False, f"Stale position {pair} removed: zero balance"
 
-    # Round qty to valid decimal places for this pair
-    decimals = PAIR_DECIMAL_PLACES.get(pair.upper(), 4)
-    if decimals == 0:
-        qty = math.floor(qty)
-    else:
-        qty = math.floor(qty * (10 ** decimals)) / (10 ** decimals)
+    # Round qty to valid LOT_SIZE for Binance
+    original_qty = qty
+    qty = _round_qty_to_lot_size(qty, pair)
+    if qty != original_qty:
+        log.info(f"[LOT_SIZE] Rounded qty {original_qty} -> {qty} for {pair}")
+
+    if qty <= 0:
+        msg = f"SELL SKIPPED: qty ({qty}) is zero or negative after LOT_SIZE rounding"
+        log.warning(msg)
+        return False, msg
 
     log.info(f"SELL order ({reason}): {format_coin(qty, pair)} @ ${price:.4f} [{order_type.upper()}]")
 

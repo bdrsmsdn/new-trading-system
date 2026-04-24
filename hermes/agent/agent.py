@@ -303,7 +303,16 @@ class HermesAgent:
             except (json.JSONDecodeError, Exception):
                 pass
 
-            # Add tool result to history
+            # Add tool_use block AND tool_result to history (both needed for valid API call)
+            messages.append({
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": tool_call.id,
+                    "name": tool_name,
+                    "input": tool_input
+                }]
+            })
             messages.append({
                 "role": "user",
                 "content": [{

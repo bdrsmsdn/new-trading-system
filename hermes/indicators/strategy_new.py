@@ -125,16 +125,16 @@ class StrategyV2:
         price_change_pct = self._get_price_momentum()
         
         # Evaluate LONG/SHORT conditions
-        signal, confidence, reasons = self._evaluate_signal(
+        signal, confidence, reasons, rsi_value, daily_pos = self._evaluate_signal(
             rsi_value=rsi_value,
             rsi_direction=rsi_direction,
             daily_pos=daily_pos,
             imbalance=imbalance,
             price_change_pct=price_change_pct
         )
-        
+
         if signal == "NO TRADE SETUP":
-            return self._no_signal(reasons[0] if reasons else "Signal conditions not met")
+            return self._no_signal(reasons[0] if reasons else "Signal conditions not met", rsi_value, daily_pos)
         
         # Calculate entry, stop loss, take profits
         entry_price, stop_loss, tp1, tp2, tp3 = self._calculate_entry_sl_tp(
@@ -203,16 +203,19 @@ class StrategyV2:
     
     def _get_rsi_with_direction(self) -> Dict:
         """Get current RSI and calculate direction from history.
-        
+
         Returns:
             Dict with 'current' RSI value and 'direction' (up/down/neutral)
         """
         from hermes.indicators.rsi import get_rsi, update_rsi
-        
+
         current_price = self._get_current_price()
         if current_price:
-            # Update RSI with current price
+            # Update RSI with current price (Wilder's smoothed)
             rsi_value = update_rsi(self.pair, current_price, period=RSI_PERIOD)
+            # Fall back to candle-based RSI if update_rsi returned default (uninitialized)
+            if rsi_value == 50.0:
+                rsi_value = get_rsi(self.pair)
         else:
             rsi_value = get_rsi(self.pair)
         
@@ -430,7 +433,7 @@ class StrategyV2:
             
             return "SHORT", confidence, reasons
         
-        return "NO TRADE SETUP", CONF_LOW, ["Conditions not aligned"]
+        return "NO TRADE SETUP", CONF_LOW, ["Conditions not aligned"], rsi_value, daily_pos
     
     def _calculate_entry_sl_tp(
         self,
@@ -555,7 +558,7 @@ class StrategyV2:
         
         return f"{base} — {', '.join(details)}"
     
-    def _no_signal(self, reason: str) -> TradingSignal:
+    def _no_signal(self, reason: str, rsi_value: float = 50.0, daily_pos: float = 50.0) -> TradingSignal:
         """Return a no-trade signal."""
         return TradingSignal(
             signal_type="NO TRADE SETUP",
@@ -564,8 +567,8 @@ class StrategyV2:
             take_profit_1=0.0,
             take_profit_2=0.0,
             take_profit_3=0.0,
-            rsi_value=50.0,
-            daily_position=50.0,
+            rsi_value=rsi_value,
+            daily_position=daily_pos,
             trend_bias="neutral",
             signal_confidence=CONF_LOW,
             reason=reason,
