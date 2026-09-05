@@ -28,22 +28,55 @@ BINANCE_WS_URL = "wss://stream.testnet.binance.vision/stream" if _testnet else "
 def _pair_to_ws_symbol(pair: str) -> str:
     return f"{pair.lower()}usdt"
 
+# Price history for spike detection (pair -> list of (timestamp, price))
+_price_history = {}
+
 def _ws_price_update(pair, data):
-    """Callback to update global prices dict from WebSocket data."""
+    """Callback to update global prices dict from WebSocket data and detect volatility spikes."""
+    global _price_history
+    cur_price = data.get("price")
+    now = time.time()
+
     prices[pair] = {
-        "price": data.get("price"),
+        "price": cur_price,
         "bid": data.get("bid"),
         "ask": data.get("ask"),
         "high": data.get("high"),
         "low": data.get("low"),
         "vol": data.get("vol", 0),
-        "updated": time.time(),
+        "updated": now,
         "source": data.get("source", "ws")
     }
-    # Update RSI from live WS price
-    from hermes.indicators.rsi import update_rsi
-    if data.get("price"):
-        update_rsi(pair, data["price"])
+
+    if cur_price and cur_price > 0:
+        # Update RSI from live WS price
+        from hermes.indicators.rsi import update_rsi
+        update_rsi(pair, cur_price)
+
+        # Volatility Spike Detection (1 minute rolling window)
+        if pair not in _price_history:
+            _price_history[pair] = []
+        _price_history[pair].append((now, cur_price))
+        # Keep only last 60 seconds
+        _price_history[pair] = [(ts, p) for ts, p in _price_history[pair] if now - ts <= 60]
+
+        if len(_price_history[pair]) >= 2:
+            old_price = _price_history[pair][0][1]
+            change_pct = (cur_price - old_price) / old_price
+            from hermes.config import SPIKE_TRIGGER_PCT
+            if abs(change_pct) >= SPIKE_TRIGGER_PCT:
+                from hermes.state import state
+                if not hasattr(state, "spike_events"):
+                    state.spike_events = {}
+                # Debounce spike triggers per pair (min 30s between triggers)
+                spike_map = getattr(state, "spike_events", {})
+                last_spike = spike_map.get(pair, 0)
+                if now - last_spike > 30:
+                    spike_map[pair] = now
+                    setattr(state, "spike_events", spike_map)
+                    direction = "SURGE 🚀" if change_pct > 0 else "DUMP 🔻"
+                    log.info(f"[WS-SPIKE] {pair} {direction}: {change_pct*100:+.2f}% in {int(now - _price_history[pair][0][0])}s! Triggering fast evaluation.")
+
 
 class BinanceWS:
     """Binance WebSocket client for real-time price feeds using Combined Streams."""

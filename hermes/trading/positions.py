@@ -43,8 +43,8 @@ def check_open_positions(current_price: float, balance: Dict[str, float]) -> Non
             execute_sell(pair, current_price, qty, "Stop Loss", order_type="market")
             continue
         
-        # Signal-based exit — use cached RSI only, no REST calls
-        if pnl_pct > 0:
+        # Signal-based exit — only trigger if profit is already substantial (>= +2.0%) or severe reversal
+        if pnl_pct >= 0.02:
             cached_mrsi = _multi_rsi_cache.get(pair, {})
             if cached_mrsi and (time.time() - cached_mrsi.get("ts", 0)) < _MULTI_RSI_TTL:
                 multi_rsi = dict(cached_mrsi["rsi"])
@@ -53,7 +53,7 @@ def check_open_positions(current_price: float, balance: Dict[str, float]) -> Non
                 # No cache — use WS-derived RSI only (NO REST)
                 multi_rsi = {"3m": get_rsi(pair), "1h": 50.0, "4h": 50.0}
             signal, score, reasons = get_signal(pair, current_price, multi_rsi)
-            if signal in ["STRONG_SELL", "SELL"]:
+            if signal == "STRONG_SELL":
                 coin = pair.replace("USDT", "")
                 balances = get_balance(use_cache=False)
                 coin_lower = coin.lower()
@@ -63,7 +63,7 @@ def check_open_positions(current_price: float, balance: Dict[str, float]) -> Non
                     del state.positions[pair]
                     state.save()
                     continue
-                log.info(f"Signal exit for {pair}: {signal} with +{pnl_pct*100:.1f}%")
+                log.info(f"Signal exit for {pair}: {signal} with +{pnl_pct*100:.2f}%")
                 execute_sell(pair, current_price, qty, f"Signal: {signal}")
 
 def check_for_entries(pair: str, current_price: float, idr_balance: float, dry_run: bool = False) -> bool:

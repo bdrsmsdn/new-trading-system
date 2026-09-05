@@ -1,14 +1,14 @@
 """
-Hermes AI Agent — MiniMax M2.7 powered trading assistant.
+Hermes AI Agent — CosmosHub (qwen-3.7-max) powered trading assistant.
 
-Uses the Anthropic-compatible API from MiniMax with function calling
+Uses the OpenAI-compatible API from CosmosHub with function calling
 to interact with the Hermes trading system.
 """
 
 import json
 from typing import List, Dict, Optional
 from hermes.logging_setup import log
-from hermes.config import MINIMAX_API_KEY, MINIMAX_BASE_URL, MINIMAX_MODEL
+from hermes.config import ROUTER_API_KEY, ROUTER_BASE_URL, ROUTER_MODEL
 from hermes.agent.tools import TOOLS, execute_tool, CONFIRM_REQUIRED
 from hermes.agent.memory import agent_memory
 
@@ -78,35 +78,20 @@ def _build_system_prompt() -> str:
 
 
 class HermesAgent:
-    """MiniMax-powered trading agent with function calling."""
+    """9router / OpenAI-compatible powered trading agent with function calling."""
 
     def __init__(self):
-        """Initialize the agent with MiniMax Anthropic-compatible client.
-
-        MiniMax requires 'Authorization: Bearer <key>' header.
-        We inject it via extra_headers on every API call for max
-        compatibility across all anthropic SDK versions.
-        """
-        if not MINIMAX_API_KEY:
-            raise ValueError(
-                "MINIMAX_API_KEY not set in .env! "
-                "Get one from https://platform.minimax.io"
-            )
-
-        import anthropic
-        self._auth_headers = {
-            "Authorization": f"Bearer {MINIMAX_API_KEY}",
-            "anthropic-version": "2023-06-01",
-        }
-        # Use AsyncAnthropic to avoid blocking the Telegram Bot's event loop
-        self.client = anthropic.AsyncAnthropic(
-            api_key="not-used",  # SDK requires non-empty, but MiniMax ignores X-Api-Key
-            base_url=MINIMAX_BASE_URL,
+        """Initialize the agent with OpenAI-compatible client."""
+        api_key = ROUTER_API_KEY or "sk-dummy"
+        from openai import AsyncOpenAI
+        self.client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=ROUTER_BASE_URL,
         )
-        self.model = MINIMAX_MODEL
+        self.model = ROUTER_MODEL
         self.conversations: Dict[str, List[Dict]] = {}
         self.pending_confirmations: Dict[str, Dict] = {}
-        log.info(f"[AGENT] Initialized with model={self.model}, base_url={MINIMAX_BASE_URL}")
+        log.info(f"[AGENT] Initialized with model={self.model}, base_url={ROUTER_BASE_URL}")
 
     def _get_messages(self, chat_id: str) -> List[Dict]:
         """Get conversation history for a chat, create if new."""
@@ -118,14 +103,13 @@ class HermesAgent:
         """Keep conversation history manageable."""
         msgs = self.conversations.get(chat_id, [])
         if len(msgs) > max_messages:
-            # Keep the last N messages
             self.conversations[chat_id] = msgs[-max_messages:]
 
     async def chat(self, chat_id: str, user_message: str) -> str:
         """Process a user message and return the agent's response.
 
         Handles the full function-calling loop:
-        1. Send message to MiniMax
+        1. Send message to CosmosHub
         2. If tool_use, execute tool, send result back
         3. Repeat until text response
 
@@ -166,72 +150,64 @@ class HermesAgent:
         for iteration in range(max_iterations):
             log.info(f"[AGENT] Iteration {iteration + 1}, messages: {len(messages)}")
 
-            # Call MiniMax API
-            response = await self.client.messages.create(
+            # Build message list with system prompt as first message (OpenAI format)
+            api_messages = [{"role": "system", "content": system_prompt}] + messages
+
+            # Call CosmosHub API (OpenAI-compatible)
+            response = await self.client.chat.completions.create(
                 model=self.model,
                 max_tokens=4096,
-                system=system_prompt,
-                messages=messages,
+                messages=api_messages,
                 tools=TOOLS,
                 temperature=0.7,
-                extra_headers=self._auth_headers,
             )
 
-            # Process response content blocks
-            assistant_content = []
-            text_parts = []
-            tool_calls = []
+            choice = response.choices[0]
+            message = choice.message
 
-            for block in response.content:
-                if block.type == "thinking":
-                    # MiniMax M2.7 returns thinking blocks — must preserve in history
-                    assistant_content.append({
-                        "type": "thinking",
-                        "thinking": block.thinking,
-                    })
-                elif block.type == "text":
-                    text_parts.append(block.text)
-                    assistant_content.append({
-                        "type": "text",
-                        "text": block.text
-                    })
-                elif block.type == "tool_use":
-                    tool_calls.append(block)
-                    assistant_content.append({
-                        "type": "tool_use",
-                        "id": block.id,
-                        "name": block.name,
-                        "input": block.input
-                    })
-
-            # Add assistant response to history (include ALL blocks per MiniMax docs)
-            # Only append if we're continuing (not returning early for confirmation)
-            # to avoid orphaned tool_use blocks in history causing 400 errors
-            if not (tool_calls and any(t.name in CONFIRM_REQUIRED for t in tool_calls)):
-                messages.append({
-                    "role": "assistant",
-                    "content": assistant_content
-                })
-
-            # If no tool calls, we're done
-            if not tool_calls:
+            # If no tool calls, we're done — return text response
+            if not message.tool_calls:
+                # Add assistant response to history
+                assistant_msg = {"role": "assistant", "content": message.content or ""}
+                messages.append(assistant_msg)
                 self._trim_history(chat_id)
-                return "\n".join(text_parts) if text_parts else "🤔 Hmm, gak ada response. Coba lagi ya."
+                return message.content or "🤔 Hmm, gak ada response. Coba lagi ya."
 
-            # Execute tool calls
-            tool_results = []
-            for tool_call in tool_calls:
-                tool_name = tool_call.name
-                tool_input = tool_call.input
+            # Add assistant message with tool calls to history
+            assistant_msg = {
+                "role": "assistant",
+                "content": message.content or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        }
+                    }
+                    for tc in message.tool_calls
+                ]
+            }
+            messages.append(assistant_msg)
+
+            # Process each tool call
+            for tc in message.tool_calls:
+                tool_name = tc.function.name
+                try:
+                    tool_input = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    tool_input = {}
 
                 # Check if confirmation is needed
                 if tool_name in CONFIRM_REQUIRED:
                     # Store pending and ask for confirmation
                     self.pending_confirmations[chat_id] = {
-                        "tool_call": tool_call,
+                        "tool_call_id": tc.id,
                         "tool_name": tool_name,
                         "tool_input": tool_input,
-                        "system_prompt": system_prompt
+                        "system_prompt": system_prompt,
+                        "prefix_text": message.content or "",
                     }
 
                     # Build confirmation message
@@ -245,8 +221,7 @@ class HermesAgent:
                     else:
                         confirm_msg = f"⚠️ Konfirmasi {tool_name}?\n\nKetik **ya** atau **batal**."
 
-                    # Return text + confirmation (DO NOT add orphaned tool_use to messages)
-                    prefix = "\n".join(text_parts) + "\n\n" if text_parts else ""
+                    prefix = (message.content or "") + "\n\n" if message.content else ""
                     return prefix + confirm_msg
 
                 # Execute non-confirmation tools immediately
@@ -254,17 +229,12 @@ class HermesAgent:
                 result = execute_tool(tool_name, tool_input)
                 log.info(f"[AGENT] Tool result: {result[:200]}...")
 
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tool_call.id,
-                    "content": result
+                # Add tool result to history (OpenAI format)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result,
                 })
-
-            # Add tool results to history
-            messages.append({
-                "role": "user",
-                "content": tool_results
-            })
 
             # Continue loop to get the next response
 
@@ -274,7 +244,7 @@ class HermesAgent:
         """Handle a confirmation response for a pending trade."""
         pending = self.pending_confirmations.pop(chat_id)
         messages = self._get_messages(chat_id)
-        tool_call = pending["tool_call"]
+        tool_call_id = pending["tool_call_id"]
         tool_name = pending["tool_name"]
         tool_input = pending["tool_input"]
         system_prompt = pending["system_prompt"]
@@ -303,23 +273,11 @@ class HermesAgent:
             except (json.JSONDecodeError, Exception):
                 pass
 
-            # Add tool_use block AND tool_result to history (both needed for valid API call)
+            # Add tool result to history
             messages.append({
-                "role": "assistant",
-                "content": [{
-                    "type": "tool_use",
-                    "id": tool_call.id,
-                    "name": tool_name,
-                    "input": tool_input
-                }]
-            })
-            messages.append({
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": tool_call.id,
-                    "content": result
-                }]
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": result,
             })
 
             # Get AI response about the result
@@ -341,12 +299,9 @@ class HermesAgent:
 
             # Add cancellation result to history
             messages.append({
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": tool_call.id,
-                    "content": json.dumps({"cancelled": True, "reason": "User cancelled"})
-                }]
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": json.dumps({"cancelled": True, "reason": "User cancelled"}),
             })
 
             return await self._run_agent_loop(chat_id, system_prompt)

@@ -28,10 +28,10 @@ _env = load_env()
 TELEGRAM_BOT_TOKEN = _env.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = _env.get("TELEGRAM_CHAT_ID", "")
 
-# MiniMax AI Agent (Anthropic-compatible API)
-MINIMAX_API_KEY = _env.get("MINIMAX_API_KEY", "")
-MINIMAX_BASE_URL = "https://api.minimax.io/anthropic"
-MINIMAX_MODEL = "MiniMax-M2.7"
+# 9router AI Agent (OpenAI-compatible API via local 9router)
+ROUTER_API_KEY = _env.get("ROUTER_API_KEY", _env.get("MINIMAX_API_KEY", ""))
+ROUTER_BASE_URL = _env.get("ROUTER_BASE_URL", "http://127.0.0.1:20128/v1")
+ROUTER_MODEL = _env.get("ROUTER_MODEL", "ag/gemini-3.7-flash-high")
 AGENT_MEMORY_FILE = SCRIPT_DIR / "hermes_agent_memory.json"
 
 # Binance Configuration
@@ -40,10 +40,10 @@ TESTNET = _env.get("TESTNET", "false").lower() == "true"
 # Trading Parameters (USDT amounts for Binance)
 MAX_TRADE_USDT = 100
 MIN_TRADE_USDT = 1
-STOP_LOSS_PCT = 0.05
-TAKE_PROFIT_PCT = 0.10
-TRAILING_STOP_PCT = 0.03
-TRAILING_ACTIVATION_PCT = 0.05
+STOP_LOSS_PCT = 0.025            # 2.5% Stop Loss
+TAKE_PROFIT_PCT = 0.045          # 4.5% Take Profit Target
+TRAILING_ACTIVATION_PCT = 0.025  # Trailing Stop starts once +2.5% in profit
+TRAILING_STOP_PCT = 0.012        # 1.2% trailing pullback tolerance
 FEE_BUFFER = 0.03
 TRADE_COOLDOWN = 60
 
@@ -87,11 +87,12 @@ PAIR_DECIMAL_PLACES = {
 }
 
 # Daemon settings
-DAEMON_TRADE_CHECK_INTERVAL = 60
+DAEMON_TRADE_CHECK_INTERVAL = 15
 DAEMON_FG_FETCH_INTERVAL = 300
 DAEMON_REBALANCE_INTERVAL = 21600
 REBALANCE_DRIFT_THRESHOLD = 0.20
 USE_STRATEGY_V2 = True
+SPIKE_TRIGGER_PCT = 0.012  # 1.2% instant spike triggers immediate V2 evaluation
 
 # DCA (Dollar Cost Averaging) settings
 DCA_CHECK_INTERVAL = 300          # Check every 5 minutes

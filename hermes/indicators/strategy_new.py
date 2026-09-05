@@ -91,7 +91,7 @@ class StrategyV2:
             risk_pct: Risk percentage per trade (0.01 = 1%)
         """
         self.pair = pair
-        self.capital = capital if capital > 0 else MAX_TRADE_RP
+        self.capital = capital if capital > 0 else MAX_TRADE_USDT
         self.risk_pct = risk_pct
         
         # Track RSI history for direction
@@ -338,19 +338,48 @@ class StrategyV2:
         # Determine signal
         long_score = conditions_met / total_conditions
         
-        # LONG check
-        if (rsi_value <= RSI_OVERSOLD_EXIT and 
-            daily_pos <= DP_BUY_ZONE and 
-            rsi_direction in ["up", "neutral"]):
+        # Mode 1: Dip Buying (Oversold bounce or recovery)
+        # Relax daily_pos requirement if RSI is very low (<= 35) or daily_pos <= 45
+        is_dip_buy = (
+            rsi_value <= RSI_OVERSOLD_EXIT and 
+            (daily_pos <= 45.0 or daily_pos == 50.0) and 
+            rsi_direction in ["up", "neutral"]
+        )
+        
+        # Mode 2: Bullish Momentum / Trend Breakout (For Greed / Trending Market)
+        # Price showing upward momentum + RSI in healthy expansion (45 to 68) + Orderbook strong
+        is_momentum_breakout = (
+            45.0 <= rsi_value <= 68.0 and
+            rsi_direction in ["up", "neutral"] and
+            (price_change_pct >= 0.0 or imbalance >= 1.1) and
+            daily_pos <= 80.0
+        )
+        
+        # Mode 3: Orderbook Absorption (Whale accumulation)
+        is_whale_absorption = (
+            imbalance >= 1.35 and
+            rsi_value <= 60.0 and
+            price_change_pct >= -0.5
+        )
+
+        if is_dip_buy or is_momentum_breakout or is_whale_absorption:
+            confidence = CONF_LOW
+            if is_dip_buy:
+                reasons.append("Mode: Dip Buy (Oversold Bounce)")
+                if long_score >= 0.8 and imbalance >= 1.0:
+                    confidence = CONF_HIGH
+                elif long_score >= 0.6:
+                    confidence = CONF_MEDIUM
+                else:
+                    confidence = CONF_LOW
+            elif is_momentum_breakout:
+                reasons.append("Mode: Momentum Breakout (Trend Continuation)")
+                confidence = CONF_HIGH if (imbalance >= 1.3 and price_change_pct > 0.8) else CONF_MEDIUM
+            elif is_whale_absorption:
+                reasons.append("Mode: Whale Absorption (Heavy Bid Imbalance)")
+                confidence = CONF_HIGH if imbalance >= 2.5 else CONF_MEDIUM
             
-            if long_score >= 0.8 and imbalance >= 1.0:
-                confidence = CONF_HIGH
-            elif long_score >= 0.6:
-                confidence = CONF_MEDIUM
-            else:
-                confidence = CONF_LOW
-            
-            return "LONG", confidence, reasons
+            return "LONG", confidence, reasons, rsi_value, daily_pos
         
         # ===== SHORT CONDITIONS =====
         reasons = []
@@ -597,3 +626,282 @@ def analyze_pair_v2(pair: str, capital: float = 0.0) -> TradingSignal:
     """Standalone analysis function for display/CLI."""
     strategy = StrategyV2(pair=pair, capital=capital)
     return strategy.analyze()
+
+
+def get_multi_tf_analysis(pair: str) -> dict:
+    """Analyze pair across multiple timeframes (15m, 1h, 4h) with EMA, RSI, and Trend Alignment."""
+    import urllib.request
+    import json
+    from hermes.indicators.candles import calc_ema
+    from hermes.indicators.rsi import calc_classic_rsi
+    from hermes.indicators.technicals import calc_macd
+
+    pair_clean = pair.upper()
+    symbol = pair_clean if pair_clean.endswith("USDT") else f"{pair_clean}USDT"
+
+    tf_results = {}
+    timeframes = ["15m", "1h", "4h"]
+
+    for tf in timeframes:
+        try:
+            url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={tf}&limit=50"
+            req = urllib.request.urlopen(url, timeout=5)
+            data = json.loads(req.read().decode())
+            closes = [float(c[4]) for c in data]
+            highs = [float(c[2]) for c in data]
+            lows = [float(c[3]) for c in data]
+
+            ema9 = calc_ema(closes, 9) or 0
+            ema21 = calc_ema(closes, 21) or 0
+            ema50 = calc_ema(closes, 50) or (calc_ema(closes, len(closes)) if closes else 0)
+            rsi = calc_classic_rsi(closes, 14) or 50.0
+            macd = calc_macd(closes) or {}
+
+            trend = "BULLISH" if ema9 > ema21 else "BEARISH"
+            if closes and ema50 is not None and closes[-1] > float(ema50) and trend == "BULLISH":
+                strength = "STRONG_BULLISH"
+            elif closes and ema50 is not None and closes[-1] < float(ema50) and trend == "BEARISH":
+                strength = "STRONG_BEARISH"
+            else:
+                strength = trend
+
+            tf_results[tf] = {
+                "close": closes[-1] if closes else 0.0,
+                "rsi": round(rsi, 2),
+                "ema9": round(ema9, 4),
+                "ema21": round(ema21, 4),
+                "trend": strength,
+                "macd_hist": round(macd.get("histogram", 0), 4)
+            }
+        except Exception as e:
+            tf_results[tf] = {"error": str(e)}
+
+    # Alignment Score
+    bull_count = sum(1 for tf, r in tf_results.items() if "BULLISH" in r.get("trend", ""))
+    bear_count = sum(1 for tf, r in tf_results.items() if "BEARISH" in r.get("trend", ""))
+
+    overall = "NEUTRAL"
+    if bull_count >= 2:
+        overall = "BULLISH_ALIGNED"
+    elif bear_count >= 2:
+        overall = "BEARISH_ALIGNED"
+
+    return {
+        "pair": pair_clean,
+        "symbol": symbol,
+        "overall_alignment": overall,
+        "timeframes": tf_results
+    }
+
+
+def get_market_screener() -> dict:
+    """Screen top tracked crypto pairs for breakout, oversold, and high-volume momentum setups."""
+    import urllib.request
+    import json
+    from hermes.indicators.rsi import calc_classic_rsi
+    from hermes.indicators.candles import calc_ema
+    from hermes.config import ALL_TRACKED
+
+    top_candidates = ALL_TRACKED[:15]
+    results = {"oversold_dips": [], "bullish_momentum": [], "overbought_caution": []}
+
+    for coin in top_candidates:
+        symbol = f"{coin.upper()}USDT"
+        try:
+            url_k = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=30"
+            req_k = urllib.request.urlopen(url_k, timeout=4)
+            data = json.loads(req_k.read().decode())
+            closes = [float(c[4]) for c in data]
+            vols = [float(c[5]) for c in data]
+
+            rsi = calc_classic_rsi(closes, 14) or 50.0
+            ema9 = calc_ema(closes, 9) or 0
+            ema21 = calc_ema(closes, 21) or 0
+            cur_price = closes[-1] if closes else 0.0
+
+            item = {
+                "coin": coin.upper(),
+                "price": cur_price,
+                "rsi": round(rsi, 2),
+                "ema9_above_21": bool(ema9 > ema21)
+            }
+
+            if rsi <= 35:
+                results["oversold_dips"].append(item)
+            elif rsi >= 70:
+                results["overbought_caution"].append(item)
+            elif ema9 > ema21 and 45 <= rsi <= 65:
+                results["bullish_momentum"].append(item)
+
+        except Exception:
+            continue
+
+    return results
+
+
+def calculate_tp_sl_plan(pair: str, entry_price: float = 0.0, custom_risk_pct: float = 0.03) -> dict:
+    """Calculate professional Multi-Level Take Profit (TP1, TP2, TP3) and Stop Loss based on ATR volatility."""
+    import urllib.request
+    import json
+    from hermes.indicators.technicals import calc_atr
+
+    pair_clean = pair.upper()
+    symbol = pair_clean if pair_clean.endswith("USDT") else f"{pair_clean}USDT"
+
+    try:
+        url_k = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=50"
+        req_k = urllib.request.urlopen(url_k, timeout=5)
+        data = json.loads(req_k.read().decode())
+        highs = [float(c[2]) for c in data]
+        lows = [float(c[3]) for c in data]
+        closes = [float(c[4]) for c in data]
+
+        current_price = closes[-1] if closes else 0.0
+        entry = entry_price if entry_price and entry_price > 0 else current_price
+
+        atr = calc_atr(highs, lows, closes, 14) or (entry * 0.02)
+
+        # Dynamic SL based on 1.5x ATR
+        stop_loss = max(0.00000001, entry - (1.5 * atr))
+        sl_pct = ((entry - stop_loss) / entry) * 100
+
+        # Multi-target Take Profits based on Risk-Reward Ratio (1:1.5, 1:2.5, 1:4)
+        risk = entry - stop_loss
+        tp1 = entry + (risk * 1.5)
+        tp2 = entry + (risk * 2.5)
+        tp3 = entry + (risk * 4.0)
+
+        return {
+            "pair": pair_clean,
+            "current_price": current_price,
+            "entry_reference": entry,
+            "atr_volatility": round(atr, 6),
+            "stop_loss": round(stop_loss, 6),
+            "stop_loss_pct": f"-{sl_pct:.2f}%",
+            "take_profit_1": {"price": round(tp1, 6), "gain": f"+{(tp1-entry)/entry*100:.2f}%", "action": "Sell 50% & move SL to Entry"},
+            "take_profit_2": {"price": round(tp2, 6), "gain": f"+{(tp2-entry)/entry*100:.2f}%", "action": "Sell 30%"},
+            "take_profit_3": {"price": round(tp3, 6), "gain": f"+{(tp3-entry)/entry*100:.2f}%", "action": "Runner 20% trailing"}
+        }
+    except Exception as e:
+        return {"error": str(e), "pair": pair_clean}
+
+
+def run_quick_backtest(pair: str, days: int = 7) -> dict:
+    """Run simulated Strategy V2 backtest on recent historical Binance klines."""
+    import urllib.request
+    import json
+    from hermes.indicators.rsi import calc_classic_rsi
+    from hermes.indicators.candles import calc_ema
+
+    pair_clean = pair.upper()
+    symbol = pair_clean if pair_clean.endswith("USDT") else f"{pair_clean}USDT"
+    limit = min(500, max(50, days * 24))
+
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit={limit}"
+        req = urllib.request.urlopen(url, timeout=6)
+        candles = json.loads(req.read().decode())
+
+        closes = [float(c[4]) for c in candles]
+        highs = [float(c[2]) for c in candles]
+        lows = [float(c[3]) for c in candles]
+
+        trades = []
+        in_pos = False
+        entry_p = 0.0
+        entry_idx = 0
+
+        for i in range(25, len(closes)):
+            sub_closes = closes[:i+1]
+            rsi = calc_classic_rsi(sub_closes, 14) or 50.0
+            ema9 = calc_ema(sub_closes, 9) or 0
+            ema21 = calc_ema(sub_closes, 21) or 0
+
+            # Buy condition: RSI < 35 or EMA9 cross EMA21
+            if not in_pos and (rsi <= 35 or (ema9 > ema21 and sub_closes[-2] <= (calc_ema(sub_closes[:-1], 21) or 0))):
+                in_pos = True
+                entry_p = sub_closes[-1]
+                entry_idx = i
+
+            elif in_pos:
+                p = sub_closes[-1]
+                gain = (p - entry_p) / entry_p
+                # TP +5% or SL -3% or hold max 24 candles
+                if gain >= 0.05 or gain <= -0.03 or (i - entry_idx) >= 24:
+                    trades.append({
+                        "pnl_pct": round(gain * 100, 2),
+                        "win": bool(gain > 0)
+                    })
+                    in_pos = False
+
+        total_trades = len(trades)
+        wins = [t for t in trades if t["win"]]
+        win_rate = (len(wins) / total_trades * 100) if total_trades > 0 else 0.0
+        total_pnl = sum(t["pnl_pct"] for t in trades)
+
+        return {
+            "pair": pair_clean,
+            "period_days": days,
+            "candles_analyzed": len(candles),
+            "total_trades": total_trades,
+            "wins": len(wins),
+            "losses": total_trades - len(wins),
+            "win_rate": f"{win_rate:.1f}%",
+            "total_pnl_pct": f"{total_pnl:+.2f}%",
+            "avg_trade_pnl": f"{(total_pnl/total_trades):+.2f}%" if total_trades else "0.00%"
+        }
+    except Exception as e:
+        return {"error": str(e), "pair": pair_clean}
+
+
+def get_orderbook_whale_walls(pair: str) -> dict:
+    """Analyze real-time orderbook depth to find Whale Buy/Sell Walls and support/resistance zones."""
+    import urllib.request
+    import json
+
+    pair_clean = pair.upper()
+    symbol = pair_clean if pair_clean.endswith("USDT") else f"{pair_clean}USDT"
+
+    try:
+        url = f"https://api.binance.com/api/v3/depth?symbol={symbol}&limit=50"
+        req = urllib.request.urlopen(url, timeout=5)
+        depth = json.loads(req.read().decode())
+
+        bids = [[float(p), float(q)] for p, q in depth.get("bids", [])]
+        asks = [[float(p), float(q)] for p, q in depth.get("asks", [])]
+
+        tot_bid_vol = sum(q for _, q in bids)
+        tot_ask_vol = sum(q for _, q in asks)
+        tot_bid_usd = sum(p * q for p, q in bids)
+        tot_ask_usd = sum(p * q for p, q in asks)
+
+        # Find largest bid and ask walls
+        top_bid_wall = max(bids, key=lambda x: x[0] * x[1]) if bids else [0, 0]
+        top_ask_wall = max(asks, key=lambda x: x[0] * x[1]) if asks else [0, 0]
+
+        imbalance = (tot_bid_usd / tot_ask_usd) if tot_ask_usd > 0 else 1.0
+
+        sentiment = "STRONG_BUY_PRESSURE" if imbalance > 1.5 else ("STRONG_SELL_PRESSURE" if imbalance < 0.67 else "BALANCED")
+
+        return {
+            "pair": pair_clean,
+            "market_pressure": sentiment,
+            "orderbook_imbalance_ratio": round(imbalance, 2),
+            "total_bid_liquidity_usd": f"${tot_bid_usd:,.2f}",
+            "total_ask_liquidity_usd": f"${tot_ask_usd:,.2f}",
+            "whale_bid_wall (Support)": {
+                "price": f"${top_bid_wall[0]}",
+                "volume_coins": f"{top_bid_wall[1]:,.2f}",
+                "total_wall_usd": f"${(top_bid_wall[0] * top_bid_wall[1]):,.2f}"
+            },
+            "whale_ask_wall (Resistance)": {
+                "price": f"${top_ask_wall[0]}",
+                "volume_coins": f"{top_ask_wall[1]:,.2f}",
+                "total_wall_usd": f"${(top_ask_wall[0] * top_ask_wall[1]):,.2f}"
+            }
+        }
+    except Exception as e:
+        return {"error": str(e), "pair": pair_clean}
+
+
+

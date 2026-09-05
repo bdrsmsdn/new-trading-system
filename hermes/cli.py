@@ -8,6 +8,7 @@ from hermes.api.rest import fetch_price_rest, get_rest_budget_status
 from hermes.indicators.fear_greed import fetch_fear_greed
 from hermes.indicators.signals import get_signal, get_market_regime
 from hermes.indicators.rsi import get_multi_rsi
+from hermes.config import MAX_TRADE_USDT
 from hermes.indicators.strategy_new import get_signal_v2, StrategyV2
 from hermes.display.analysis import print_analysis, print_analysis_v2
 from hermes.display.dashboard import print_portfolio_dashboard

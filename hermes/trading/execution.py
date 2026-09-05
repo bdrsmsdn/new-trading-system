@@ -251,7 +251,7 @@ def execute_sell(pair: str, price: float, qty: float, reason: str = "", order_ty
 
             from hermes.agent.memory import agent_memory
             agent_memory.log_trade_outcome(
-                pair=pair, entry_price=entry, exit_price=price, qty=qty,
+                pair=pair, entry_price=entry, exit_price=price,
                 pnl_pct=pnl_pct, exit_reason=reason or "manual",
                 hold_duration_hours=hold_hours,
             )

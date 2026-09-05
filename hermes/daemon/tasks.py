@@ -222,9 +222,26 @@ async def daemon_trade_check_v2(get_balance_func, min_confidence: str = "Medium"
             for pair in list(state.positions.keys()):
                 if pair in prices:
                     check_open_positions(prices[pair]["price"], balance)
+
+            # Fast Evaluation on Volatility Spike
+            spike_pairs = [p for p, ts in getattr(state, "spike_events", {}).items() if time.time() - ts < 20]
+            if spike_pairs:
+                for pair in spike_pairs:
+                    if pair in prices and pair not in state.positions and usdt >= MIN_TRADE_USDT:
+                        price = prices[pair]["price"]
+                        res = await get_signal_v2_async(pair, capital=usdt, risk_pct=0.01)
+                        signal_data = res.get("signal", res) if isinstance(res, dict) else {}
+                        if signal_data.get("signal_type") == "LONG":
+                            log.info(f"[SPIKE-TRADE] Fast Execution on {pair} Spike! Price: ${price}")
+                            live_balance = get_balance_func(use_cache=False)
+                            usdt = live_balance.get("usdt", 0)
+                            if usdt >= MIN_TRADE_USDT and execute_buy(pair, price, usdt):
+                                usdt -= MAX_TRADE_USDT
             
-            # Only look for entries when F&G is favorable
-            if state.fg_value <= FG_BUY_THRESHOLD:
+            # Regime-aware trading gatekeeper (BULL/SIDEWAYS/BEAR)
+            # Bullish/Greed (FG >= 50): Aggressive momentum & breakout allowed
+            # Neutral/Fear (FG < 50): Dip buying enabled, filter extreme crash if FG < 10
+            if state.fg_value >= 15:
                 for pair in state.active_pairs:
                     if pair not in prices:
                         continue
@@ -237,7 +254,8 @@ async def daemon_trade_check_v2(get_balance_func, min_confidence: str = "Medium"
                     price = prices[pair]["price"]
                     
                     # Run Strategy V2 analysis
-                    signal_data = await get_signal_v2_async(pair, capital=usdt, risk_pct=0.01)
+                    res = await get_signal_v2_async(pair, capital=usdt, risk_pct=0.01)
+                    signal_data = res.get("signal", res) if isinstance(res, dict) else {}
                     signal_type = signal_data.get("signal_type", "NO TRADE SETUP")
                     confidence = signal_data.get("signal_confidence", "Low")
                     conf_level = confidence_order.get(confidence, 0)
@@ -245,9 +263,9 @@ async def daemon_trade_check_v2(get_balance_func, min_confidence: str = "Medium"
                     # Only execute if signal and confidence meet threshold
                     if signal_type == "LONG" and conf_level >= min_conf_level:
                         if usdt >= MIN_TRADE_USDT:
-                            log.info(f"[V2-TRADE] {pair.upper()}: LONG signal ({confidence}) at Rp {price:,.0f}")
-                            log.info(f"         RSI: {signal_data.get('rsi_value', 0):.1f} | EMA9: {signal_data.get('ema_9', 0):.4f} | EMA21: {signal_data.get('ema_21', 0):.4f}")
-                            log.info(f"         SL: {signal_data.get('stop_loss', 0):,.0f} | TP3: {signal_data.get('take_profit_3', 0):,.0f}")
+                            log.info(f"[V2-TRADE] {pair.upper()}: LONG signal ({confidence}) at ${price}")
+                            log.info(f"         RSI: {signal_data.get('rsi_value', 0):.1f} | DailyPos: {signal_data.get('daily_position', 0):.1f}%")
+                            log.info(f"         SL: ${signal_data.get('stop_loss', 0):.4f} | TP1: ${signal_data.get('take_profit_1', 0):.4f} | TP2: ${signal_data.get('take_profit_2', 0):.4f}")
                             log.info(f"         Orderbook imbalance: {signal_data.get('orderbook_imbalance', 1.0):.2f}")
                             
                             live_balance = get_balance_func(use_cache=False)
@@ -256,9 +274,16 @@ async def daemon_trade_check_v2(get_balance_func, min_confidence: str = "Medium"
                                 usdt -= MAX_TRADE_USDT
                     
                     elif signal_type == "SHORT" and conf_level >= min_conf_level:
-                        # For shorts, we need to have the asset first
-                        # This would be implemented with sell logic
-                        log.info(f"[V2-TRADE] {pair.upper()}: SHORT signal ({confidence}) - not implemented in auto-trader")
+                        # Auto-Short on Futures if available balance exists
+                        from hermes.trading.futures import get_futures_account_overview, execute_futures_order
+                        f_acc = get_futures_account_overview()
+                        f_avail = f_acc.get("available_balance", 0.0) if f_acc.get("success") else 0.0
+                        if f_avail >= 5.0:
+                            trade_margin = min(f_avail, 15.0) # max $15 margin per short
+                            log.info(f"[FUTURES-AUTO-SHORT] {pair.upper()}: Executing SHORT on Futures (${trade_margin:.2f} margin, 3x) at ${price}")
+                            execute_futures_order(pair=pair, side="SHORT", usdt_margin=trade_margin, leverage=3)
+                        else:
+                            log.info(f"[V2-TRADE] {pair.upper()}: SHORT signal ({confidence}) at ${price} (Futures balance < $5, skipped)")
             
             state.save()
         except Exception as e:

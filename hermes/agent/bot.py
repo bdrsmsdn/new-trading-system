@@ -7,7 +7,7 @@ allowing natural language interaction for trading operations.
 
 import asyncio
 import logging
-from telegram import Update, BotCommand
+from telegram import Update, BotCommand, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -42,6 +42,19 @@ def authorized(func):
             return
         return await func(update, context)
     return wrapper
+
+
+# ─── Custom Keyboard Markup ───────────────────────────────────────────────────
+
+HERMES_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("/spot"), KeyboardButton("/futures"), KeyboardButton("/screener")],
+        [KeyboardButton("/fear"), KeyboardButton("/rank"), KeyboardButton("/status")],
+        [KeyboardButton("/plan SOL"), KeyboardButton("/tf SOL"), KeyboardButton("/whale SOL")],
+    ],
+    resize_keyboard=True,
+    is_persistent=True
+)
 
 
 # ─── Direct Command Parser ─────────────────────────────────────────────────────
@@ -83,17 +96,17 @@ def _parse_direct_command(text: str) -> tuple[str, dict] | None:
         pair = m.group(1)
         return "get_price", {"pair": pair}
 
-    # /balance or balance
-    if re.match(r'^(?:/balance|balance)$', lower):
-        return "get_balance", {}
+    # /spot or spot
+    if re.match(r'^(?:/spot|spot|porto|portfolio|balance|/balance|/portfolio)$', lower):
+        return "get_spot_overview", {}
+
+    # /futures or futures or /fapi
+    if re.match(r'^(?:/futures|futures|/fapi|fapi|perp|/perp)$', lower):
+        return "get_futures_overview", {}
 
     # /rank or rank
     if re.match(r'^(?:/rank|rank)$', lower):
         return "rank_pairs", {}
-
-    # /portfolio or portfolio
-    if re.match(r'^(?:/portfolio|portfolio)$', lower):
-        return "get_portfolio", {}
 
     # /fear or fear
     if re.match(r'^(?:/fear|fear)$', lower):
@@ -102,6 +115,35 @@ def _parse_direct_command(text: str) -> tuple[str, dict] | None:
     # /positions or positions
     if re.match(r'^(?:/positions|positions)$', lower):
         return "check_positions", {}
+
+    # /tf [pair] or mtf [pair]
+    m = re.match(r'^(?:/tf|tf|mtf)\s+(\w+)$', lower)
+    if m:
+        pair = m.group(1)
+        return "get_multi_tf_analysis", {"pair": pair}
+
+    # /screener or screener
+    if re.match(r'^(?:/screener|screener|scan)$', lower):
+        return "get_market_screener", {}
+
+    # /plan [pair]
+    m = re.match(r'^(?:/plan|plan|tpsl)\s+(\w+)$', lower)
+    if m:
+        pair = m.group(1)
+        return "get_tp_sl_plan", {"pair": pair}
+
+    # /whale [pair] or /depth [pair]
+    m = re.match(r'^(?:/whale|whale|depth|walls)\s+(\w+)$', lower)
+    if m:
+        pair = m.group(1)
+        return "get_whale_walls", {"pair": pair}
+
+    # /backtest [pair] [days]
+    m = re.match(r'^(?:/backtest|backtest|bt)\s+(\w+)(?:\s+(\d+))?$', lower)
+    if m:
+        pair = m.group(1)
+        days = int(m.group(2)) if m.group(2) else 7
+        return "run_quick_backtest", {"pair": pair, "days": days}
 
     return None
 
@@ -169,6 +211,99 @@ def _execute_direct_command(tool_name: str, tool_input: dict) -> str:
         elif tool_name == "get_fear_greed":
             return f"😱 *Fear & Greed:* {data.get('fear_greed_value', 'N/A')} — {data.get('classification', 'N/A')}"
 
+        elif tool_name == "get_spot_overview":
+            total = data.get("total_portfolio_usdt", 0)
+            holdings = data.get("holdings", [])
+            lines = [f"💰 **Total Spot Portfolio**: ${total:,.2f} USDT\n"]
+            for h in holdings:
+                lines.append(f"• **{h['asset']}**: {h['total']} (${h['usdt_value']:,.2f} USDT)")
+            if data.get("dust_count", 0) > 0:
+                lines.append(f"\n🔍 *Dust assets (< $1)*: {data.get('dust_count')} items")
+            return "\n".join(lines)
+
+        elif tool_name == "get_futures_overview":
+            total = data.get("total_wallet_balance", 0)
+            avail = data.get("available_balance", 0)
+            pnl = data.get("unrealized_pnl", 0)
+            positions = data.get("open_positions", [])
+            lines = [
+                f"⚡ **Binance USDT-M Futures Overview**",
+                f"💵 **Wallet Balance**: `${total:,.2f} USDT`",
+                f"🟢 **Available Margin**: `${avail:,.2f} USDT`",
+                f"📊 **Unrealized PnL**: `${pnl:+,.2f} USDT`\n"
+            ]
+            if positions:
+                lines.append("🎯 **Open Positions:**")
+                for p in positions:
+                    lines.append(f"• **{p['pair']}** ({p['side']} {p['leverage']}x): {p['amount']} @ ${p['entry_price']:.4f} | PnL: `${p['unrealized_pnl']:+,.2f}` (Liq: ${p['liquidation_price']:.4f})")
+            else:
+                lines.append("⚪ *Tidak ada posisi Futures yang sedang terbuka.*")
+            return "\n".join(lines)
+
+        elif tool_name == "get_multi_tf_analysis":
+            pair = data.get("pair", "")
+            align = data.get("overall_alignment", "NEUTRAL")
+            lines = [f"📊 **Multi-Timeframe Analysis: {pair}**", f"🎯 **Trend Alignment**: `{align}`\n"]
+            for tf, info in data.get("timeframes", {}).items():
+                if "error" in info:
+                    lines.append(f"• **{tf}**: Error - {info['error']}")
+                else:
+                    lines.append(f"• **{tf.upper()}**: {info.get('trend')} | RSI: {info.get('rsi')} | Close: ${info.get('close')}")
+            return "\n".join(lines)
+
+        elif tool_name == "get_market_screener":
+            dips = data.get("oversold_dips", [])
+            moms = data.get("bullish_momentum", [])
+            lines = ["🔎 **Market Quick Screener (1H)**\n"]
+            if dips:
+                lines.append("🟢 **Oversold / Dip Candidates (RSI ≤ 35):**")
+                for d in dips:
+                    lines.append(f"  • {d['coin']}: RSI {d['rsi']} (${d['price']})")
+            else:
+                lines.append("🟢 **Oversold Dips:** Tidak ada yang oversold ekstrem.")
+
+            if moms:
+                lines.append("\n🚀 **Bullish Momentum Setups (EMA9 > 21 & RSI 45-65):**")
+                for m in moms:
+                    lines.append(f"  • {m['coin']}: RSI {m['rsi']} (${m['price']})")
+            return "\n".join(lines)
+
+        elif tool_name == "get_tp_sl_plan":
+            pair = data.get("pair", "")
+            if "error" in data:
+                return f"⚠️ Error calculating plan: {data['error']}"
+            return (
+                f"🎯 **Trading Plan: {pair}**\n"
+                f"💵 Current / Entry: ${data.get('entry_reference')}\n"
+                f"🛑 Stop Loss: ${data.get('stop_loss')} ({data.get('stop_loss_pct')})\n\n"
+                f"🎯 **Targets:**\n"
+                f"1️⃣ TP 1: ${data.get('take_profit_1', {}).get('price')} ({data.get('take_profit_1', {}).get('gain')}) — {data.get('take_profit_1', {}).get('action')}\n"
+                f"2️⃣ TP 2: ${data.get('take_profit_2', {}).get('price')} ({data.get('take_profit_2', {}).get('gain')}) — {data.get('take_profit_2', {}).get('action')}\n"
+                f"3️⃣ TP 3: ${data.get('take_profit_3', {}).get('price')} ({data.get('take_profit_3', {}).get('gain')}) — {data.get('take_profit_3', {}).get('action')}"
+            )
+
+        elif tool_name == "get_whale_walls":
+            pair = data.get("pair", "")
+            bid_wall = data.get("whale_bid_wall (Support)", {})
+            ask_wall = data.get("whale_ask_wall (Resistance)", {})
+            return (
+                f"🐋 **Whale Walls & Depth Analysis: {pair}**\n"
+                f"📊 Market Pressure: `{data.get('market_pressure')}` (Imbalance: {data.get('orderbook_imbalance_ratio')}x)\n"
+                f"💰 Total Bids: {data.get('total_bid_liquidity_usd')} | Asks: {data.get('total_ask_liquidity_usd')}\n\n"
+                f"🟢 **Whale Support Wall:** {bid_wall.get('price')} ({bid_wall.get('total_wall_usd')})\n"
+                f"🔴 **Whale Resistance Wall:** {ask_wall.get('price')} ({ask_wall.get('total_wall_usd')})"
+            )
+
+        elif tool_name == "run_quick_backtest":
+            pair = data.get("pair", "")
+            return (
+                f"📈 **Backtest Strategy V2: {pair} ({data.get('period_days')} Days)**\n"
+                f"🕯️ Candles: {data.get('candles_analyzed')} | Trades: {data.get('total_trades')}\n"
+                f"🎯 Win Rate: **{data.get('win_rate')}** ({data.get('wins')} Win / {data.get('losses')} Loss)\n"
+                f"💰 Total Return: **{data.get('total_pnl_pct')}**\n"
+                f"📊 Avg/Trade: {data.get('avg_trade_pnl')}"
+            )
+
         elif tool_name == "check_positions":
             positions = data.get("positions", [])
             if not positions:
@@ -197,26 +332,20 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     welcome = (
         "🤖 **Hermes AI Trading Agent**\n\n"
-        "Halo! Gue Hermes, AI trading assistant lo.\n\n"
-        "**Yang bisa gue lakuin:**\n"
-        "📊 Cek market & sentiment (F&G, regime)\n"
-        "📈 Analisis pair & signal trading\n"
-        "💰 Cek portfolio & balance\n"
-        "🛒 Eksekusi buy/sell (dengan konfirmasi)\n"
-        "🧠 Self-learning dari trade history\n"
-        "🎯 Bikin strategy sendiri\n\n"
-        "**Commands:**\n"
-        "/status — Quick portfolio summary\n"
-        "/learn — Review & learn dari trade history\n"
-        "/strategies — Lihat strategy yang udah dipelajari\n"
-        "/reset — Reset conversation\n\n"
-        "Atau langsung chat aja natural, misal:\n"
-        "• _\"Market gimana sekarang?\"_\n"
-        "• _\"Rekomendasiin pair buat dibeli\"_\n"
-        "• _\"Beli DOGE\"_\n"
-        "• _\"Berapa portfolio gue?\"_"
+        "Halo! Gue Hermes, AI autonomous trading assistant lo di Binance.\n\n"
+        "**Fitur & Analisis Utama:**\n"
+        "💰 `/spot` — Cek total aset Spot Binance & valuasi live USDT\n"
+        "🔎 `/screener` — Scan koin momentum & dip oversold\n"
+        "🐋 `/whale <coin>` — Deteksi tembok orderbook paus (Whale Walls)\n"
+        "🎯 `/plan <coin>` — Kalkulator TP 1/2/3 & Stop Loss (ATR Volatility)\n"
+        "📊 `/tf <coin>` — Analisis tren Multi-Timeframe (15m, 1h, 4h)\n"
+        "📈 `/backtest <coin> 7` — Quick Backtest strategi V2 di data Binance\n"
+        "🏆 `/rank` — Ranking skor sinyal 30 pair crypto\n"
+        "😱 `/fear` — Crypto Fear & Greed Index live\n"
+        "📊 `/status` — Ringkasan status & posisi bot\n\n"
+        "Silakan gunakan tombol menu di bawah atau langsung ketik chat biasa!"
     )
-    await update.message.reply_text(welcome, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(welcome, reply_markup=HERMES_KEYBOARD, parse_mode=ParseMode.MARKDOWN)
 
 
 @authorized
@@ -421,11 +550,13 @@ async def run_telegram_bot():
 
     # Set bot commands (visible in Telegram UI)
     await app.bot.set_my_commands([
-        BotCommand("start", "Welcome & capabilities"),
-        BotCommand("status", "Quick portfolio summary"),
-        BotCommand("learn", "Self-learning review"),
-        BotCommand("strategies", "View learned strategies"),
-        BotCommand("reset", "Reset conversation"),
+        BotCommand("spot", "Cek total saldo Spot & valuasi live USDT"),
+        BotCommand("screener", "Scan koin bullish momentum & oversold dips"),
+        BotCommand("fear", "Cek Crypto Fear & Greed Index live"),
+        BotCommand("rank", "Ranking skor 30 pair crypto terbaik"),
+        BotCommand("status", "Ringkasan status daemon & open posisi"),
+        BotCommand("start", "Menu utama & refresh tombol shortcut"),
+        BotCommand("reset", "Reset history obrolan dengan AI agent"),
     ])
 
     # Register handlers
@@ -434,7 +565,7 @@ async def run_telegram_bot():
     app.add_handler(CommandHandler("learn", cmd_learn))
     app.add_handler(CommandHandler("strategies", cmd_strategies))
     app.add_handler(CommandHandler("reset", cmd_reset))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT, handle_message))
 
     log.info(f"[BOT] Starting Telegram bot (authorized chat: {TELEGRAM_CHAT_ID})")
     log.info("[BOT] Hermes AI Agent is ready! Send a message on Telegram.")
