@@ -223,6 +223,10 @@ async def daemon_trade_check_v2(get_balance_func, min_confidence: str = "Medium"
                 if pair in prices:
                     check_open_positions(prices[pair]["price"], balance)
 
+            # Autonomous Futures Position Monitor & Exit (TP / SL / Trailing)
+            from hermes.trading.futures_monitor import check_open_futures_positions
+            check_open_futures_positions()
+
             # Fast Evaluation on Volatility Spike
             spike_pairs = [p for p, ts in getattr(state, "spike_events", {}).items() if time.time() - ts < 20]
             if spike_pairs:
