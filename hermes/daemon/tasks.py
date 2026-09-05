@@ -266,16 +266,26 @@ async def daemon_trade_check_v2(get_balance_func, min_confidence: str = "Medium"
                     
                     # Only execute if signal and confidence meet threshold
                     if signal_type == "LONG" and conf_level >= min_conf_level:
+                        # 1) Try Spot Buy first if Spot USDT >= $1
                         if usdt >= MIN_TRADE_USDT:
-                            log.info(f"[V2-TRADE] {pair.upper()}: LONG signal ({confidence}) at ${price}")
+                            log.info(f"[V2-TRADE] {pair.upper()}: LONG signal ({confidence}) at ${price} on SPOT")
                             log.info(f"         RSI: {signal_data.get('rsi_value', 0):.1f} | DailyPos: {signal_data.get('daily_position', 0):.1f}%")
                             log.info(f"         SL: ${signal_data.get('stop_loss', 0):.4f} | TP1: ${signal_data.get('take_profit_1', 0):.4f} | TP2: ${signal_data.get('take_profit_2', 0):.4f}")
-                            log.info(f"         Orderbook imbalance: {signal_data.get('orderbook_imbalance', 1.0):.2f}")
-                            
                             live_balance = get_balance_func(use_cache=False)
                             usdt = live_balance.get("usdt", 0)
                             if usdt >= MIN_TRADE_USDT and execute_buy(pair, price, usdt):
                                 usdt -= MAX_TRADE_USDT
+                        else:
+                            # 2) If Spot USDT empty, execute LONG on Futures!
+                            from hermes.trading.futures import get_futures_account_overview, execute_futures_order
+                            f_acc = get_futures_account_overview()
+                            f_avail = f_acc.get("available_balance", 0.0) if f_acc.get("success") else 0.0
+                            if f_avail >= 5.0:
+                                trade_margin = min(f_avail, 15.0) # max $15 margin per trade
+                                log.info(f"[FUTURES-AUTO-LONG] {pair.upper()}: Executing LONG on Futures (${trade_margin:.2f} margin, 3x) at ${price}")
+                                execute_futures_order(pair=pair, side="LONG", usdt_margin=trade_margin, leverage=3)
+                            else:
+                                log.info(f"[V2-TRADE] {pair.upper()}: LONG signal ({confidence}) at ${price} (Spot & Futures balance < $5, skipped)")
                     
                     elif signal_type == "SHORT" and conf_level >= min_conf_level:
                         # Auto-Short on Futures if available balance exists
