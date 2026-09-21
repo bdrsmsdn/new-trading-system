@@ -256,8 +256,19 @@ def execute_sell(pair: str, price: float, qty: float, reason: str = "", order_ty
                 hold_duration_hours=hold_hours,
             )
 
-            from hermes.notifications.telegram import telegram_trade_alert
-            telegram_trade_alert(pair=pair, side="SELL", qty=qty, price=price, total=total_usdt)
+            peak_price = state.positions[pair].get("peak_price", entry)
+            from hermes.notifications.telegram import telegram_exit_alert
+            telegram_exit_alert(
+                pair=pair,
+                side="SELL",
+                entry=entry,
+                exit_price=price,
+                qty=qty,
+                pnl_pct=pnl_pct,
+                hold_hours=hold_hours,
+                reason=reason or "Take Profit",
+                peak_price=peak_price
+            )
 
             del state.positions[pair]
         state.last_trade_time[pair] = time.time()
@@ -305,8 +316,9 @@ def _simulate_sell(pair: str, price: float, qty: float, reason: str):
 
     log.info(f"[DRY_RUN] Simulated SELL: {pair} @ ${price:.4f}, pnl={pnl_pct:.1f}%, hold={hold_hours:.1f}h")
 
+    peak_price = state.positions[pair].get("peak_price", entry)
     from hermes.notifications.telegram import telegram_exit_alert
-    telegram_exit_alert(pair=pair, side="SELL", entry=entry, exit_price=price, qty=qty, pnl_pct=pnl_pct, hold_hours=hold_hours, reason=reason)
+    telegram_exit_alert(pair=pair, side="SELL", entry=entry, exit_price=price, qty=qty, pnl_pct=pnl_pct, hold_hours=hold_hours, reason=reason, peak_price=peak_price)
 
     del state.positions[pair]
     state.last_trade_time[pair] = time.time()

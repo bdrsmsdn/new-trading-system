@@ -18,6 +18,25 @@ FUTURES_BASE_URL = "https://fapi.binance.com"
 DEFAULT_LEVERAGE = 3           # Low leverage 3x (safe & measured)
 DEFAULT_MARGIN_TYPE = "ISOLATED" # Always isolated margin to protect entire balance
 
+# Futures Lot Size Decimals (Binance USD-M specifications)
+FUTURES_DECIMALS = {
+    "BTC": 3,
+    "ETH": 3,
+    "SOL": 2,
+    "BNB": 2,
+    "XRP": 1,
+    "DOGE": 0,
+    "ADA": 0,
+    "MATIC": 0,
+    "DOT": 1,
+    "NEAR": 0,
+    "AVAX": 0,
+    "LINK": 2,
+    "TON": 1,
+    "UNI": 1,
+    "ENJ": 0,
+}
+
 
 def futures_signed_request(endpoint: str, params: Optional[dict] = None, method: str = "GET") -> dict:
     """Send a signed HMAC SHA256 request to Binance USD-M Futures (fapi.binance.com)."""
@@ -162,8 +181,7 @@ def execute_futures_order(
     raw_qty = notional_value / mark_price
 
     # Precision formatting from pair precision map or symbol rules
-    from hermes.config import PAIR_DECIMAL_PLACES
-    decimals = PAIR_DECIMAL_PLACES.get(clean_pair, 2)
+    decimals = FUTURES_DECIMALS.get(clean_pair, 2)
     if decimals == 0:
         quantity = f"{int(raw_qty)}"
     else:

@@ -57,6 +57,8 @@ def main():
     sub.add_parser("rank-pairs", help="Rank all pairs by score")
     sub.add_parser("market-regime", help="Get market regime")
     sub.add_parser("state", help="Show current state")
+    p_news = sub.add_parser("news", help="Get crypto news and sentiment")
+    p_news.add_argument("pair", nargs="?", default=None, help="Specific coin (e.g. btc, sol, eth)")
     daemon_parser = sub.add_parser("daemon", help="Run autonomous daemon")
     daemon_parser.add_argument("--dry-run", action="store_true", help="Simulate trading without real orders")
     daemon_parser.add_argument("--with-agent", action="store_true", help="Also start Telegram AI agent in same process")
@@ -118,7 +120,7 @@ def main():
             if not current_price:
                 current_price = fetch_price_rest(pair)
             if current_price:
-                check_open_positions(current_price, balance)
+                check_open_positions(current_price, balance, specific_pair=pair)
         to_json({"status": "checked"})
         
     elif args.command == "execute-buy":
@@ -178,7 +180,11 @@ def main():
     
     elif args.command == "budget":
         to_json(get_rest_budget_status())
-        
+
+    elif args.command == "news":
+        from hermes.indicators.news_sentiment import format_news_telegram
+        print(format_news_telegram(args.pair))
+
     elif args.command == "daemon":
         from hermes.config import PID_FILE
         if PID_FILE.exists():
@@ -235,7 +241,7 @@ def main():
             if not current_price:
                 current_price = fetch_price_rest(pair)
             if current_price:
-                check_open_positions(current_price, balance)
+                check_open_positions(current_price, balance, specific_pair=pair)
 
         if fg_val <= FG_BUY_THRESHOLD:
             for pair in state.active_pairs:

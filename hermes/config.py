@@ -40,10 +40,10 @@ TESTNET = _env.get("TESTNET", "false").lower() == "true"
 # Trading Parameters (USDT amounts for Binance)
 MAX_TRADE_USDT = 100
 MIN_TRADE_USDT = 1
-STOP_LOSS_PCT = 0.025            # 2.5% Stop Loss
-TAKE_PROFIT_PCT = 0.045          # 4.5% Take Profit Target
-TRAILING_ACTIVATION_PCT = 0.025  # Trailing Stop starts once +2.5% in profit
-TRAILING_STOP_PCT = 0.012        # 1.2% trailing pullback tolerance
+STOP_LOSS_PCT = 0.05            # 5.0% Stop Loss
+TAKE_PROFIT_PCT = 0.10          # 10.0% Take Profit Target
+TRAILING_ACTIVATION_PCT = 0.06  # Trailing Stop starts once +6.0% in profit
+TRAILING_STOP_PCT = 0.025       # 2.5% trailing pullback tolerance
 FEE_BUFFER = 0.03
 TRADE_COOLDOWN = 60
 

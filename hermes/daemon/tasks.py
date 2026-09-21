@@ -155,7 +155,9 @@ async def daemon_trade_check(get_balance_func):
             # Check positions using WS prices (no REST)
             for pair in list(state.positions.keys()):
                 if pair in prices:
-                    check_open_positions(prices[pair]["price"], balance)
+                    pair_price = prices[pair].get("price", 0)
+                    if pair_price > 0:
+                        check_open_positions(pair_price, balance, specific_pair=pair)
             
             # Only look for entries when F&G is favorable
             if state.fg_value <= FG_BUY_THRESHOLD:
@@ -221,7 +223,9 @@ async def daemon_trade_check_v2(get_balance_func, min_confidence: str = "Medium"
             # Check positions using WS prices (no REST)
             for pair in list(state.positions.keys()):
                 if pair in prices:
-                    check_open_positions(prices[pair]["price"], balance)
+                    pair_price = prices[pair].get("price", 0)
+                    if pair_price > 0:
+                        check_open_positions(pair_price, balance, specific_pair=pair)
 
             # Autonomous Futures Position Monitor & Exit (TP / SL / Trailing)
             from hermes.trading.futures_monitor import check_open_futures_positions
@@ -266,6 +270,16 @@ async def daemon_trade_check_v2(get_balance_func, min_confidence: str = "Medium"
                     
                     # Only execute if signal and confidence meet threshold
                     if signal_type == "LONG" and conf_level >= min_conf_level:
+                        # Safety check: News sentiment & emergency circuit breaker
+                        try:
+                            from hermes.indicators.news_sentiment import is_news_safe_to_buy
+                            safe, news_reason = is_news_safe_to_buy(pair)
+                            if not safe:
+                                log.warning(f"[V2-TRADE] 🛡️ Skipping {pair.upper()} LONG due to news risk: {news_reason}")
+                                continue
+                        except Exception as ne:
+                            log.debug(f"[V2-TRADE] News sentiment check skipped: {ne}")
+
                         # 1) Try Spot Buy first if Spot USDT >= $1
                         if usdt >= MIN_TRADE_USDT:
                             log.info(f"[V2-TRADE] {pair.upper()}: LONG signal ({confidence}) at ${price} on SPOT")

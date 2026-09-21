@@ -7,7 +7,7 @@ Uses OpenAI-compatible tool format (function calling).
 
 import json
 import asyncio
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from hermes.logging_setup import log
 
@@ -361,6 +361,22 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_crypto_news",
+            "description": "Fetch real-time crypto news, AI-ranked importance, and sentiment analysis (bullish/bearish/emergency). Can filter by specific coin or get market-wide news.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pair": {
+                        "type": "string",
+                        "description": "Optional crypto pair or symbol (e.g. 'btc', 'eth', 'sol'). Omit for global market news."
+                    }
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "close_futures_trade",
             "description": "Close an existing open position on Binance USDT-M Futures.",
             "parameters": {
@@ -473,7 +489,7 @@ def _execute_check_positions() -> dict:
     for pair in list(state.positions.keys()):
         current_price = prices.get(pair, {}).get("price")
         if current_price:
-            check_open_positions(current_price, balance)
+            check_open_positions(current_price, balance, specific_pair=pair)
             pos = state.positions.get(pair)
             if pos:
                 pnl = (current_price - pos["entry_price"]) / pos["entry_price"] * 100
@@ -618,6 +634,11 @@ def _execute_close_futures_trade(pair: str, side: str, qty: float) -> dict:
     return {"success": success, "result": res}
 
 
+def _execute_get_crypto_news(pair: Optional[str] = None) -> dict:
+    from hermes.indicators.news_sentiment import get_news_sentiment
+    return get_news_sentiment(pair)
+
+
 # ─── Dispatcher ────────────────────────────────────────────────────────────────
 
 # Tools that require confirmation before execution
@@ -674,6 +695,8 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
             result = _execute_futures_trade(**tool_input)
         elif tool_name == "close_futures_trade":
             result = _execute_close_futures_trade(**tool_input)
+        elif tool_name == "get_crypto_news":
+            result = _execute_get_crypto_news(**tool_input)
         else:
             result = {"error": f"Unknown tool: {tool_name}"}
 

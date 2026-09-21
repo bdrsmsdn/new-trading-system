@@ -49,7 +49,7 @@ def authorized(func):
 HERMES_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("/spot"), KeyboardButton("/futures"), KeyboardButton("/screener")],
-        [KeyboardButton("/fear"), KeyboardButton("/rank"), KeyboardButton("/status")],
+        [KeyboardButton("/fear"), KeyboardButton("/news"), KeyboardButton("/rank")],
         [KeyboardButton("/plan SOL"), KeyboardButton("/tf SOL"), KeyboardButton("/whale SOL")],
     ],
     resize_keyboard=True,
@@ -111,6 +111,12 @@ def _parse_direct_command(text: str) -> tuple[str, dict] | None:
     # /fear or fear
     if re.match(r'^(?:/fear|fear)$', lower):
         return "get_fear_greed", {}
+
+    # /news or news or /news [pair]
+    m = re.match(r'^(?:/news|news|berita)(?:\s+(\w+))?$', lower)
+    if m:
+        pair = m.group(1)
+        return "get_crypto_news", {"pair": pair} if pair else {}
 
     # /positions or positions
     if re.match(r'^(?:/positions|positions)$', lower):
@@ -318,6 +324,11 @@ def _execute_direct_command(tool_name: str, tool_input: dict) -> str:
         elif tool_name == "get_portfolio":
             return data.get("summary", str(data))
 
+        elif tool_name == "get_crypto_news":
+            from hermes.indicators.news_sentiment import format_news_telegram
+            pair = tool_input.get("pair")
+            return format_news_telegram(pair)
+
         else:
             return json.dumps(data, indent=2)
 
@@ -357,6 +368,17 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     agent: HermesAgent = context.bot_data["agent"]
     response = await agent.chat(chat_id, "Kasih gue ringkasan cepat: balance USDT, posisi terbuka (kalau ada), Fear & Greed, dan market regime sekarang. Singkat aja.")
     await _send_long_message(update, response)
+
+
+@authorized
+async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /news [coin] — Show latest crypto news and sentiment."""
+    await update.message.reply_chat_action(ChatAction.TYPING)
+    args = context.args
+    pair = args[0] if args else None
+    from hermes.indicators.news_sentiment import format_news_telegram
+    res = format_news_telegram(pair)
+    await _send_long_message(update, res)
 
 
 @authorized
@@ -551,6 +573,8 @@ async def run_telegram_bot():
     # Set bot commands (visible in Telegram UI)
     await app.bot.set_my_commands([
         BotCommand("spot", "Cek total saldo Spot & valuasi live USDT"),
+        BotCommand("futures", "Cek posisi & margin balance Futures"),
+        BotCommand("news", "Berita crypto & sentimen pasar AI terkini"),
         BotCommand("screener", "Scan koin bullish momentum & oversold dips"),
         BotCommand("fear", "Cek Crypto Fear & Greed Index live"),
         BotCommand("rank", "Ranking skor 30 pair crypto terbaik"),
@@ -562,6 +586,7 @@ async def run_telegram_bot():
     # Register handlers
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("news", cmd_news))
     app.add_handler(CommandHandler("learn", cmd_learn))
     app.add_handler(CommandHandler("strategies", cmd_strategies))
     app.add_handler(CommandHandler("reset", cmd_reset))

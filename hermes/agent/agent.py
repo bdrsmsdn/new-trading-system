@@ -99,27 +99,77 @@ class HermesAgent:
             self.conversations[chat_id] = []
         return self.conversations[chat_id]
 
-    def _trim_history(self, chat_id: str, max_messages: int = 40):
-        """Keep conversation history manageable."""
+    def _trim_history(self, chat_id: str, max_messages: int = 30):
+        """Keep conversation history manageable by trimming at a clean user turn."""
         msgs = self.conversations.get(chat_id, [])
-        if len(msgs) > max_messages:
-            self.conversations[chat_id] = msgs[-max_messages:]
+        if len(msgs) <= max_messages:
+            return
+        candidate = msgs[-max_messages:]
+        for i, m in enumerate(candidate):
+            if m.get("role") == "user":
+                self.conversations[chat_id] = candidate[i:]
+                return
+        self.conversations[chat_id] = []
+
+    def _sanitize_messages(self, messages: List[Dict]) -> List[Dict]:
+        """Ensure message sequence satisfies strict provider turn requirements (e.g. Gemini)."""
+        first_user_idx = next((i for i, m in enumerate(messages) if m.get("role") == "user"), None)
+        if first_user_idx is None:
+            return []
+        clean = list(messages[first_user_idx:])
+
+        result = []
+        i = 0
+        while i < len(clean):
+            msg = clean[i]
+            role = msg.get("role")
+
+            if role == "user":
+                result.append(msg)
+                i += 1
+            elif role == "assistant":
+                tool_calls = msg.get("tool_calls")
+                if not tool_calls:
+                    result.append(msg)
+                    i += 1
+                else:
+                    # Assistant with tool calls MUST come after user or tool
+                    if not result or result[-1].get("role") not in ("user", "tool"):
+                        msg_copy = dict(msg)
+                        msg_copy.pop("tool_calls", None)
+                        if not msg_copy.get("content"):
+                            msg_copy["content"] = "..."
+                        result.append(msg_copy)
+                        i += 1
+                        continue
+
+                    expected_ids = {tc["id"] for tc in tool_calls if "id" in tc}
+                    j = i + 1
+                    tool_msgs = []
+                    while j < len(clean) and clean[j].get("role") == "tool":
+                        tool_msgs.append(clean[j])
+                        j += 1
+
+                    found_ids = {tm.get("tool_call_id") for tm in tool_msgs}
+                    result.append(msg)
+                    for tm in tool_msgs:
+                        result.append(tm)
+                    # Supply missing dummy tool responses if incomplete
+                    missing_ids = expected_ids - found_ids
+                    for mid in missing_ids:
+                        result.append({"role": "tool", "tool_call_id": mid, "content": "{\"status\": \"interrupted\"}"})
+                    i = j
+            elif role == "tool":
+                # Orphan tool message without preceding assistant -> drop
+                i += 1
+            else:
+                result.append(msg)
+                i += 1
+
+        return result
 
     async def chat(self, chat_id: str, user_message: str) -> str:
-        """Process a user message and return the agent's response.
-
-        Handles the full function-calling loop:
-        1. Send message to CosmosHub
-        2. If tool_use, execute tool, send result back
-        3. Repeat until text response
-
-        Args:
-            chat_id: Unique chat identifier
-            user_message: The user's message
-
-        Returns:
-            The agent's text response
-        """
+        """Process a user message and return the agent's response."""
         messages = self._get_messages(chat_id)
 
         # Handle confirmation responses
@@ -137,7 +187,21 @@ class HermesAgent:
         try:
             return await self._run_agent_loop(chat_id, system_prompt)
         except Exception as e:
-            log.error(f"[AGENT] Error in chat: {e}")
+            err_str = str(e)
+            log.error(f"[AGENT] Error in chat: {err_str}")
+
+            # Auto-heal on Gemini function-call turn violation
+            if "function call turn" in err_str or "INVALID_ARGUMENT" in err_str:
+                log.warning(f"[AGENT] Detected corrupted function call turns in history, resetting conversation for {chat_id} and retrying...")
+                self.reset_conversation(chat_id)
+                messages = self._get_messages(chat_id)
+                messages.append({"role": "user", "content": user_message})
+                try:
+                    return await self._run_agent_loop(chat_id, system_prompt)
+                except Exception as retry_err:
+                    log.error(f"[AGENT] Retry after reset failed: {retry_err}")
+                    return f"⚠️ Error: {str(retry_err)}\n\nCoba lagi ya, mungkin ada masalah koneksi."
+
             # Remove last message on error to prevent poisoned history
             if messages and messages[-1]["role"] == "user":
                 messages.pop()
@@ -148,10 +212,11 @@ class HermesAgent:
         messages = self._get_messages(chat_id)
 
         for iteration in range(max_iterations):
-            log.info(f"[AGENT] Iteration {iteration + 1}, messages: {len(messages)}")
+            sanitized = self._sanitize_messages(messages)
+            log.info(f"[AGENT] Iteration {iteration + 1}, raw messages: {len(messages)}, sanitized: {len(sanitized)}")
 
             # Build message list with system prompt as first message (OpenAI format)
-            api_messages = [{"role": "system", "content": system_prompt}] + messages
+            api_messages = [{"role": "system", "content": system_prompt}] + sanitized
 
             # Call CosmosHub API (OpenAI-compatible)
             response = await self.client.chat.completions.create(
