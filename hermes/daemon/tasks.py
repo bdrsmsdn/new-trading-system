@@ -217,19 +217,24 @@ async def daemon_trade_check_v2(get_balance_func, min_confidence: str = "Medium"
             balance = get_balance_func(use_cache=True)
             usdt = balance.get("usdt", 0)
             
-            if usdt < MIN_TRADE_USDT and not state.positions:
-                continue
-            
-            # Check positions using WS prices (no REST)
+            # 1) Always check open positions using WS prices (no REST)
             for pair in list(state.positions.keys()):
                 if pair in prices:
                     pair_price = prices[pair].get("price", 0)
                     if pair_price > 0:
                         check_open_positions(pair_price, balance, specific_pair=pair)
 
-            # Autonomous Futures Position Monitor & Exit (TP / SL / Trailing)
+            # 2) Always monitor Autonomous Futures Position & Exit (TP / SL / Trailing)
             from hermes.trading.futures_monitor import check_open_futures_positions
             check_open_futures_positions()
+
+            # 3) Check if enough capital exists for new entry (Spot or Futures)
+            if usdt < MIN_TRADE_USDT:
+                from hermes.trading.futures import get_futures_account_overview
+                f_acc = get_futures_account_overview()
+                f_avail = f_acc.get("available_balance", 0.0) if f_acc.get("success") else 0.0
+                if f_avail < 5.0:
+                    continue
 
             # Fast Evaluation on Volatility Spike
             spike_pairs = [p for p, ts in getattr(state, "spike_events", {}).items() if time.time() - ts < 20]
@@ -425,6 +430,9 @@ def validate_positions_on_startup(get_balance_func):
         return
 
     balances = get_balance_func(use_cache=False)
+    if not balances:
+        log.warning("Skipping position validation on startup — balance fetch returned empty/failed")
+        return
     removed = []
     for pair in list(state.positions.keys()):
         # Extract coin name from pair (e.g., "FLOKI" from "FLOKIUSDT")

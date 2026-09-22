@@ -117,16 +117,17 @@ def binance_signed_request(endpoint: str, params: dict = None, method: str = "PO
             # Handle timestamp error — adjust offset and retry
             try:
                 resp_data = json.loads(body_response)
-                if resp_data.get("code") == -1021:
-                    # Timestamp invalid — resync
-                    server_time = get_server_time()
-                    if server_time:
-                        _last_timestamp_offset = server_time - int(time.time() * 1000)
-                    if attempt < 2:
-                        continue  # retry with new offset
-                elif resp_data.get("code"):
-                    # Log error code only, not full response
-                    log.error(f"Binance API error code: {resp_data.get('code')}, msg: {resp_data.get('msg', '')}")
+                if isinstance(resp_data, dict):
+                    if resp_data.get("code") == -1021:
+                        # Timestamp invalid — resync
+                        server_time = get_server_time()
+                        if server_time:
+                            _last_timestamp_offset = server_time - int(time.time() * 1000)
+                        if attempt < 2:
+                            continue  # retry with new offset
+                    elif resp_data.get("code"):
+                        # Log error code only, not full response
+                        log.error(f"Binance API error code: {resp_data.get('code')}, msg: {resp_data.get('msg', '')}")
             except json.JSONDecodeError:
                 pass
 
