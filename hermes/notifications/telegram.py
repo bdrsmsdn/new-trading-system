@@ -7,6 +7,7 @@ from hermes.config import (
 )
 from hermes.state import state, prices
 from hermes.logging_setup import log
+from hermes.utils import format_price, format_qty
 
 _telegram_enabled = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 _telegram_last_send = 0.0
@@ -53,8 +54,8 @@ def telegram_trade_alert(pair: str, side: str, qty: float, price: float, total: 
             msg = (
                 f"🟢 *HERMES FUTURES {side_upper}*\n"
                 f"Pair: *{clean_pair}*\n"
-                f"Entry Price: *${price:.4f}*\n"
-                f"Kuantitas: {qty:,.6f} {coin}\n"
+                f"Entry Price: *{format_price(price)}*\n"
+                f"Kuantitas: {format_qty(qty)} {coin}\n"
                 f"Margin: *${total:.2f} USDT* (3x Leverage)\n"
                 f"────────────────────\n"
                 f"🎯 Target TP: *+5.0% ROE*\n"
@@ -68,13 +69,13 @@ def telegram_trade_alert(pair: str, side: str, qty: float, price: float, total: 
             msg = (
                 f"🟢 *HERMES BUY EXECUTED (SPOT)*\n"
                 f"Pair: *{clean_pair}*\n"
-                f"Harga Beli (Entry): *${price:.4f}*\n"
-                f"Kuantitas: {qty:,.6f} {coin}\n"
+                f"Harga Beli (Entry): *{format_price(price)}*\n"
+                f"Kuantitas: {format_qty(qty)} {coin}\n"
                 f"Total Modal: *${total:.2f} USDT*\n"
                 f"────────────────────\n"
-                f"🎯 Target TP (+{TAKE_PROFIT_PCT*100:.1f}%): *${tp_target:.4f}*\n"
-                f"🛡️ Trailing Stop: *Aktif di ${trail_act:.4f}* (+{TRAILING_ACTIVATION_PCT*100:.1f}%)\n"
-                f"🛑 Target SL (-{STOP_LOSS_PCT*100:.1f}%): *${sl_target:.4f}*"
+                f"🎯 Target TP (+{TAKE_PROFIT_PCT*100:.1f}%): *{format_price(tp_target)}*\n"
+                f"🛡️ Trailing Stop: *Aktif di {format_price(trail_act)}* (+{TRAILING_ACTIVATION_PCT*100:.1f}%)\n"
+                f"🛑 Target SL (-{STOP_LOSS_PCT*100:.1f}%): *{format_price(sl_target)}*"
             )
     else:
         # Fallback if telegram_trade_alert is invoked for SELL
@@ -95,8 +96,8 @@ def telegram_trade_alert(pair: str, side: str, qty: float, price: float, total: 
             f"{emoji} *HERMES {tag} — {clean_pair}*\n"
             f"────────────────────\n"
             f"💵 {outcome_lbl}: *{outcome_val}*\n"
-            f"📈 Entry: *${entry_price:.4f}* → Exit: *${price:.4f}*\n"
-            f"📦 Kuantitas: {qty:,.6f} {coin}\n"
+            f"📈 Entry: *{format_price(entry_price)}* → Exit: *{format_price(price)}*\n"
+            f"📦 Kuantitas: {format_qty(qty)} {coin}\n"
             f"💰 Total Nilai: *${total:.2f} USDT*\n"
             f"⏱️ Durasi Hold: {int(hold_time)}m\n"
             f"────────────────────\n"
@@ -190,14 +191,14 @@ def telegram_exit_alert(pair: str, side: str, entry: float, exit_price: float, q
         f"Alasan: *{reason}*",
         f"────────────────────",
         f"💵 {outcome_label}: *{outcome_val}*",
-        f"📈 Harga Beli (Entry): *${entry:.4f}*",
-        f"📉 Harga Jual (Exit): *${exit_price:.4f}*",
+        f"📈 Harga Beli (Entry): *{format_price(entry)}*",
+        f"📉 Harga Jual (Exit): *{format_price(exit_price)}*",
     ]
     if peak_price and peak_price > entry:
-        lines.append(f"🔝 Harga Tertinggi (Peak): *${peak_price:.4f}*")
+        lines.append(f"🔝 Harga Tertinggi (Peak): *{format_price(peak_price)}*")
 
     lines.extend([
-        f"📦 Kuantitas: {qty:,.6f} {coin}",
+        f"📦 Kuantitas: {format_qty(qty)} {coin}",
         f"💰 Total Nilai Cair: *${total_usdt:.2f} USDT*",
         f"⏱️ Durasi Hold: {duration_str}",
         f"────────────────────",
@@ -261,14 +262,14 @@ def telegram_futures_exit_alert(
         f"Mode: *{leverage}x Leverage ({side.upper()})*",
         f"────────────────────",
         f"💵 {outcome_label}: *{outcome_val}*",
-        f"📈 Entry Price: *${entry_price:.4f}*",
-        f"📉 Exit Price: *${exit_price:.4f}*",
+        f"📈 Entry Price: *{format_price(entry_price)}*",
+        f"📉 Exit Price: *{format_price(exit_price)}*",
     ]
     if exit_type == "TRAIL" and peak_roe > 0:
         lines.append(f"🔝 Peak ROE: *+{peak_roe*100:.2f}%*")
 
     lines.extend([
-        f"📦 Ukuran Posisi: {amount:,.4f} {clean_pair}",
+        f"📦 Ukuran Posisi: {format_qty(amount)} {clean_pair}",
         f"💰 Margin Terpakai: *${initial_margin:.2f} USDT* (Notional: ${notional:.2f})",
         f"────────────────────",
         f"ℹ️ {note}"
@@ -314,7 +315,7 @@ def telegram_morning_brief(fg_val: int, fg_class: str, usdt_balance: float, posi
             unrealized = (current_price - entry) * pos.get("qty", 0)
             total_unrealized += unrealized
             lines.append(
-                f"  {pair.upper()}: ${entry:.4f} → ${current_price:.4f} ({pnl:+.1f}%)"
+                f"  {pair.upper()}: {format_price(entry)} → {format_price(current_price)} ({pnl:+.1f}%)"
             )
         lines.append(f"  Unrealized P&L: ${total_unrealized:+.2f}")
     else:

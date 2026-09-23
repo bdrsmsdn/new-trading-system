@@ -39,7 +39,7 @@ def calculate_atr(pair: str, current_price: float, period: int = 14) -> float:
         return current_price * 0.02
     
     atr = sum(tr_values) / len(tr_values)
-    return atr
+    return atr if atr > 0 else (current_price * 0.02)
 
 def get_dynamic_position_size(pair: str, current_price: float, usdt_balance: float) -> float:
     """Calculate dynamic position size based on volatility."""
@@ -47,9 +47,10 @@ def get_dynamic_position_size(pair: str, current_price: float, usdt_balance: flo
 
     vol_factor = calculate_volatility(pair, current_price)
     atr = calculate_atr(pair, current_price)
-    atr_ratio = atr / current_price if current_price > 0 else 0.02
+    atr_ratio = (atr / current_price) if current_price > 0 else 0.02
 
-    combined_factor = vol_factor * 0.7 + max(0.3, min(1.0, 0.02 / atr_ratio)) * 0.3
+    atr_term = (0.02 / atr_ratio) if atr_ratio > 0 else 1.0
+    combined_factor = vol_factor * 0.7 + max(0.3, min(1.0, atr_term)) * 0.3
     dynamic_size = base_size * combined_factor
 
     max_affordable = usdt_balance * (1 - FEE_BUFFER)

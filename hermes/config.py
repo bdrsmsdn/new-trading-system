@@ -94,6 +94,10 @@ REBALANCE_DRIFT_THRESHOLD = 0.20
 USE_STRATEGY_V2 = True
 SPIKE_TRIGGER_PCT = 0.012  # 1.2% instant spike triggers immediate V2 evaluation
 
+# Profit Auto-Sweep to Funding Wallet (Survival & P2P IDR Fund)
+AUTO_SWEEP_PROFIT_TO_FUNDING = True
+PROFIT_SWEEP_MIN_USDT = 0.05
+
 # DCA (Dollar Cost Averaging) settings
 DCA_CHECK_INTERVAL = 300          # Check every 5 minutes
 DCA_TRIGGER_PCT = 0.05            # Buy when price drops 5% below avg entry

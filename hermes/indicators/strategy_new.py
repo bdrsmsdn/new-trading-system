@@ -775,12 +775,12 @@ def calculate_tp_sl_plan(pair: str, entry_price: float = 0.0, custom_risk_pct: f
             "pair": pair_clean,
             "current_price": current_price,
             "entry_reference": entry,
-            "atr_volatility": round(atr, 6),
-            "stop_loss": round(stop_loss, 6),
+            "atr_volatility": round(atr, 8),
+            "stop_loss": round(stop_loss, 8),
             "stop_loss_pct": f"-{sl_pct:.2f}%",
-            "take_profit_1": {"price": round(tp1, 6), "gain": f"+{(tp1-entry)/entry*100:.2f}%", "action": "Sell 50% & move SL to Entry"},
-            "take_profit_2": {"price": round(tp2, 6), "gain": f"+{(tp2-entry)/entry*100:.2f}%", "action": "Sell 30%"},
-            "take_profit_3": {"price": round(tp3, 6), "gain": f"+{(tp3-entry)/entry*100:.2f}%", "action": "Runner 20% trailing"}
+            "take_profit_1": {"price": round(tp1, 8), "gain": f"+{(tp1-entry)/entry*100:.2f}%", "action": "Sell 50% & move SL to Entry"},
+            "take_profit_2": {"price": round(tp2, 8), "gain": f"+{(tp2-entry)/entry*100:.2f}%", "action": "Sell 30%"},
+            "take_profit_3": {"price": round(tp3, 8), "gain": f"+{(tp3-entry)/entry*100:.2f}%", "action": "Runner 20% trailing"}
         }
     except Exception as e:
         return {"error": str(e), "pair": pair_clean}

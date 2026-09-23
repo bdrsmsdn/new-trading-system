@@ -11,6 +11,7 @@ from hermes.config import (
     TRAILING_STOP_PCT, TRADE_COOLDOWN, MIN_TRADE_USDT
 )
 from hermes.trading.tp_evaluator import evaluate_tp_momentum, send_tp_extension_alert
+from hermes.utils import format_price
 
 _MULTI_RSI_TTL = 300  # Match rsi.py TTL
 
@@ -88,7 +89,7 @@ def check_open_positions(current_price: float, balance: Dict[str, float], specif
                     state.save()
 
                     floor_price = entry * (1 + pos["profit_floor_pct"])
-                    log.info(f"🚀 [TP-EXTENDED] {pair}: Trend Extension activated! Floor: +{pos['profit_floor_pct']*100:.1f}% (${floor_price:.4f})")
+                    log.info(f"🚀 [TP-EXTENDED] {pair}: Trend Extension activated! Floor: +{pos['profit_floor_pct']*100:.1f}% ({format_price(floor_price)})")
 
                     try:
                         send_tp_extension_alert(

@@ -20,6 +20,7 @@ from hermes.indicators.rsi import get_rsi, get_multi_rsi
 from hermes.api.orderbook import get_orderbook
 from hermes.indicators.news_sentiment import get_news_sentiment
 from hermes.notifications.telegram import telegram_send
+from hermes.utils import format_price
 
 
 def evaluate_tp_momentum(
@@ -110,8 +111,8 @@ def evaluate_tp_momentum(
 
             user_prompt = f"""
 Pair: {clean_pair}USDT {'(Binance Futures ' + str(leverage) + 'x)' if is_futures else '(Binance Spot)'}
-Entry Price: ${entry_price:.6f}
-Current Price: ${current_price:.6f}
+Entry Price: {format_price(entry_price)}
+Current Price: {format_price(current_price)}
 Gain: +{pnl_pct * 100:.1f}%
 Market Sentiment: F&G {fg_val} ({fg_cls})
 
@@ -219,13 +220,13 @@ def send_tp_extension_alert(
         f"Tipe: *{type_str}* | Target +10.0% Tercapai! 🎯\n"
         f"────────────────────\n"
         f"📈 Gain Saat Ini: *+{pnl_pct * 100:.2f}%*\n"
-        f"💵 Entry: *${entry_price:.4f}* → Sekarang: *${current_price:.4f}*\n"
+        f"💵 Entry: *{format_price(entry_price)}* → Sekarang: *{format_price(current_price)}*\n"
         f"────────────────────\n"
         f"🧠 *AI Decision:* **EXTEND & RIDE THE TREND 🚀**\n"
         f"📊 *Analisis:* {reason}\n"
         f"📰 *Sentimen News:* {sentiment_str}\n"
         f"────────────────────\n"
-        f"🔒 *Profit Floor Terkunci:* *+{floor_pct * 100:.1f}%* (${floor_price:.4f})\n"
+        f"🔒 *Profit Floor Terkunci:* *+{floor_pct * 100:.1f}%* ({format_price(floor_price)})\n"
         f"🛡️ *Trailing Stop:* *{trail_pct * 100:.1f}%* di bawah puncak tertinggi\n"
         f"────────────────────\n"
         f"ℹ️ *Bot menahan posisi karena momentum sangat kuat. Stop loss sudah dinaikkan di atas harga beli (+{floor_pct * 100:.0f}%), sehingga posisi ini dijamin profit sambil mengejar puncak!* 🚀"

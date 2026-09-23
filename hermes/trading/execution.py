@@ -5,6 +5,7 @@ from hermes.state import state
 from hermes.api.auth import api_call, binance_signed_request
 from hermes.indicators.volatility import get_dynamic_position_size, calculate_volatility
 from hermes.config import MIN_TRADE_USDT, FEE_BUFFER, STOP_LOSS_PCT, TAKE_PROFIT_PCT, PAIR_DECIMAL_PLACES
+from hermes.utils import format_price, format_qty
 
 
 # Cache for exchange info LOT_SIZE constraints
@@ -80,14 +81,7 @@ def _round_qty_to_lot_size(qty: float, pair: str) -> float:
 
 def format_coin(amount: float, symbol: str) -> str:
     """Format coin amount for display."""
-    if amount < 0.00001:
-        return f"{amount:.8f} {symbol}"
-    elif amount < 0.001:
-        return f"{amount:.6f} {symbol}"
-    elif amount < 1:
-        return f"{amount:.4f} {symbol}"
-    else:
-        return f"{amount:.2f} {symbol}"
+    return f"{format_qty(amount)} {symbol}"
 
 def execute_buy(pair: str, price: float, usdt_balance: float, dry_run: bool = False) -> tuple[bool, str]:
     """Execute a buy order on Binance with dynamic position sizing.
@@ -102,7 +96,7 @@ def execute_buy(pair: str, price: float, usdt_balance: float, dry_run: bool = Fa
     if last_price and last_price > 0:
         deviation = abs(price - last_price) / last_price
         if deviation > 0.02:
-            log.warning(f"[PRICE] {pair} deviation {deviation*100:.1f}% from last price ${last_price:.4f}")
+            log.warning(f"[PRICE] {pair} deviation {deviation*100:.1f}% from last price {format_price(last_price)}")
 
     buy_amount_usdt = get_dynamic_position_size(pair, price, usdt_balance)
     if buy_amount_usdt <= 0:
@@ -111,11 +105,11 @@ def execute_buy(pair: str, price: float, usdt_balance: float, dry_run: bool = Fa
         return False, msg
 
     vol_factor = calculate_volatility(pair, price)
-    log.info(f"BUY order (dynamic, vol_factor={vol_factor:.2f}): ${buy_amount_usdt:.2f} @ ${price:.4f}")
+    log.info(f"BUY order (dynamic, vol_factor={vol_factor:.2f}): ${buy_amount_usdt:.2f} @ {format_price(price)}")
 
     if dry_run:
         buy_amount_usdt = get_dynamic_position_size(pair, price, usdt_balance)
-        log.info(f"[DRY_RUN] BUY: {pair} @ ${price:.4f}, qty_usdt=${buy_amount_usdt:.2f}, expected_coins={buy_amount_usdt/price:.2f}")
+        log.info(f"[DRY_RUN] BUY: {pair} @ {format_price(price)}, qty_usdt=${buy_amount_usdt:.2f}, expected_coins={buy_amount_usdt/price:.2f}")
         _simulate_buy(pair, price, buy_amount_usdt)
         return True, ""
 
@@ -134,7 +128,7 @@ def execute_buy(pair: str, price: float, usdt_balance: float, dry_run: bool = Fa
         if coin_amount <= 0:
             coin_amount = buy_amount_usdt / price  # fallback estimate
         spent_usdt = float(trade_details.get("cummulativeQuoteQty", buy_amount_usdt) or buy_amount_usdt)
-        log.info(f"✅ BUY SUCCESS: {format_coin(coin_amount, pair)} @ ${price:.4f}")
+        log.info(f"✅ BUY SUCCESS: {format_coin(coin_amount, pair)} @ {format_price(price)}")
         log.info(f"   Total: ${spent_usdt:.2f}")
 
         from hermes.notifications.telegram import telegram_trade_alert
@@ -269,6 +263,16 @@ def execute_sell(pair: str, price: float, qty: float, reason: str = "", order_ty
                 reason=reason or "Take Profit",
                 peak_price=peak_price
             )
+
+            # Auto-sweep realized profit to Funding Wallet (Survival & Isolation)
+            from hermes.config import AUTO_SWEEP_PROFIT_TO_FUNDING, PROFIT_SWEEP_MIN_USDT
+            pnl_usdt = (price - entry) * qty
+            if AUTO_SWEEP_PROFIT_TO_FUNDING and pnl_usdt >= PROFIT_SWEEP_MIN_USDT:
+                try:
+                    from hermes.api.transfer import sweep_profit_to_funding
+                    sweep_profit_to_funding(profit_usdt=pnl_usdt, min_threshold=PROFIT_SWEEP_MIN_USDT, pair=pair)
+                except Exception as swe:
+                    log.error(f"[PROFIT-SWEEP] Sweep error: {swe}")
 
             del state.positions[pair]
         state.last_trade_time[pair] = time.time()
