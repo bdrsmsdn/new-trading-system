@@ -389,11 +389,32 @@ TOOLS = [
                 "required": ["pair", "side", "qty"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sync_positions",
+            "description": "Synchronize open positions directly from Binance Spot balances and /api/v3/myTrades. Automatically calculates exact entry prices, timestamps, SL (-5%), and TP (+10%) for any coins held in Spot. Use this whenever checking positions or if any coin seems missing.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
     }
 ]
 
 
 # ─── Tool Executors ────────────────────────────────────────────────────────────
+
+def _execute_sync_positions() -> dict:
+    from hermes.trading.reconcile import reconcile_positions_from_binance
+    positions = reconcile_positions_from_binance(save_to_state=True)
+    return {
+        "success": True,
+        "positions_count": len(positions),
+        "positions": positions
+    }
 
 def _execute_get_price(pair: str) -> dict:
     from hermes.api.rest import fetch_price_rest
@@ -506,6 +527,11 @@ def _execute_check_positions() -> dict:
 
 def _execute_get_state() -> dict:
     from hermes.state import state
+    from hermes.trading.reconcile import reconcile_positions_from_binance
+    try:
+        reconcile_positions_from_binance(save_to_state=True)
+    except Exception:
+        pass
     return {
         "positions": state.positions,
         "active_pairs": state.active_pairs,
@@ -589,6 +615,11 @@ def _execute_save_strategy_note(rule: str, confidence: str = "hypothesis") -> di
 
 def _execute_get_spot_overview() -> dict:
     from hermes.api.balance import get_spot_account_overview
+    from hermes.trading.reconcile import reconcile_positions_from_binance
+    try:
+        reconcile_positions_from_binance(save_to_state=True)
+    except Exception:
+        pass
     return get_spot_account_overview()
 
 
@@ -697,6 +728,8 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
             result = _execute_close_futures_trade(**tool_input)
         elif tool_name == "get_crypto_news":
             result = _execute_get_crypto_news(**tool_input)
+        elif tool_name == "sync_positions":
+            result = _execute_sync_positions()
         else:
             result = {"error": f"Unknown tool: {tool_name}"}
 

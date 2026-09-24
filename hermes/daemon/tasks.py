@@ -421,32 +421,32 @@ async def daemon_dca(get_balance_func):
             log.error(f"[DCA] Daemon error: {e}")
 
 def validate_positions_on_startup(get_balance_func):
-    """Remove stale positions from state that no longer exist on Binance.
+    """Reconcile and synchronize positions from Binance myTrades and Spot balance on startup.
 
-    Called on daemon startup to prevent failed SELL attempts due to positions
-    that were manually sold or closed externally.
+    Ensures all active assets in Spot have exact entry prices and TP/SL tracking,
+    and removes stale positions with 0 balance.
     """
-    if not state.positions:
-        return
+    try:
+        from hermes.trading.reconcile import reconcile_positions_from_binance
+        reconciled = reconcile_positions_from_binance(save_to_state=True)
+        log.info(f"[STARTUP-SYNC] Synchronized {len(reconciled)} open positions from Binance myTrades.")
+    except Exception as e:
+        log.error(f"[STARTUP-SYNC] Error reconciling positions on startup: {e}")
 
-    balances = get_balance_func(use_cache=False)
-    if not balances:
-        log.warning("Skipping position validation on startup — balance fetch returned empty/failed")
-        return
-    removed = []
-    for pair in list(state.positions.keys()):
-        # Extract coin name from pair (e.g., "FLOKI" from "FLOKIUSDT")
-        coin = pair.upper().replace("USDT", "")
-        coin_lower = coin.lower()
-        balance = balances.get(coin_lower, 0)
-        if balance == 0:
-            log.warning(f"Removed stale position {pair} — balance on Binance is 0")
-            del state.positions[pair]
-            removed.append(pair)
 
-    if removed:
-        state.save()
-        log.info(f"Cleaned {len(removed)} stale position(s): {', '.join(removed)}")
+async def daemon_periodic_sync():
+    """Periodically reconcile open positions from Binance Spot balances & myTrades every 10 minutes."""
+    while True:
+        try:
+            await asyncio.sleep(600)  # Reconcile every 10 minutes
+            from hermes.trading.reconcile import reconcile_positions_from_binance
+            loop = asyncio.get_running_loop()
+            reconciled = await loop.run_in_executor(None, reconcile_positions_from_binance, 0.80, True)
+            log.info(f"[PERIODIC-SYNC] Background sync complete. Active positions: {len(reconciled)}")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.error(f"[PERIODIC-SYNC] Error during periodic sync: {e}")
 
 
 async def run_daemon(get_balance_func, dry_run: bool = False):
@@ -503,5 +503,6 @@ async def run_daemon(get_balance_func, dry_run: bool = False):
         daemon_pair_reassess(),
         daemon_morning_brief(get_balance_func),
         daemon_rebalance(get_balance_func),
-        daemon_dca(get_balance_func)
+        daemon_dca(get_balance_func),
+        daemon_periodic_sync()
     )

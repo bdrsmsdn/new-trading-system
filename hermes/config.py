@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 # Paths
-SCRIPT_DIR = Path.cwd()
+SCRIPT_DIR = Path(__file__).resolve().parent.parent
 STATE_FILE = SCRIPT_DIR / "hermes_trader_state.json"
 PRICE_CACHE = SCRIPT_DIR / "hermes_prices.json"
 ENV_FILE = SCRIPT_DIR / ".env"

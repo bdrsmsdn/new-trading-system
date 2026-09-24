@@ -48,9 +48,9 @@ def authorized(func):
 
 HERMES_KEYBOARD = ReplyKeyboardMarkup(
     [
-        [KeyboardButton("/spot"), KeyboardButton("/futures"), KeyboardButton("/screener")],
-        [KeyboardButton("/fear"), KeyboardButton("/news"), KeyboardButton("/rank")],
-        [KeyboardButton("/plan SOL"), KeyboardButton("/tf SOL"), KeyboardButton("/whale SOL")],
+        [KeyboardButton("/spot"), KeyboardButton("/positions"), KeyboardButton("/sync")],
+        [KeyboardButton("/futures"), KeyboardButton("/screener"), KeyboardButton("/rank")],
+        [KeyboardButton("/fear"), KeyboardButton("/news"), KeyboardButton("/plan SOL")],
     ],
     resize_keyboard=True,
     is_persistent=True
@@ -121,6 +121,10 @@ def _parse_direct_command(text: str) -> tuple[str, dict] | None:
     # /positions or positions
     if re.match(r'^(?:/positions|positions)$', lower):
         return "check_positions", {}
+
+    # /sync or sync or /reconcile
+    if re.match(r'^(?:/sync|sync|reconcile|/reconcile)$', lower):
+        return "sync_positions", {}
 
     # /tf [pair] or mtf [pair]
     m = re.match(r'^(?:/tf|tf|mtf)\s+(\w+)$', lower)
@@ -323,6 +327,14 @@ def _execute_direct_command(tool_name: str, tool_input: dict) -> str:
 
         elif tool_name == "get_portfolio":
             return data.get("summary", str(data))
+
+        elif tool_name == "sync_positions":
+            cnt = data.get("positions_count", 0)
+            positions = data.get("positions", {})
+            lines = [f"🔄 **Sinkronisasi Binance myTrades Berhasil!**", f"Total posisi aktif terkawal: **{cnt}**\n"]
+            for pair, p in positions.items():
+                lines.append(f"• **{pair}**: {p.get('qty')} @ ${p.get('entry_price', 0):.4f} (🛑 SL: ${p.get('stop_loss', 0):.4f} | 🎯 TP: ${p.get('take_profit', 0):.4f})")
+            return "\n".join(lines)
 
         elif tool_name == "get_crypto_news":
             from hermes.indicators.news_sentiment import format_news_telegram

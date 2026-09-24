@@ -42,6 +42,7 @@ def main():
     p.add_argument("--risk", type=float, default=0.01, help="Risk percent (default: 0.01 = 1%%)")
     
     sub.add_parser("check-positions", help="Check TP/SL on open positions")
+    sub.add_parser("sync-positions", help="Sync and reconcile open positions from Binance myTrades and Spot balance")
     
     p = sub.add_parser("execute-buy", help="Execute buy order")
     p.add_argument("pair")
@@ -122,6 +123,11 @@ def main():
             if current_price:
                 check_open_positions(current_price, balance, specific_pair=pair)
         to_json({"status": "checked"})
+
+    elif args.command == "sync-positions":
+        from hermes.trading.reconcile import reconcile_positions_from_binance
+        reconciled = reconcile_positions_from_binance(save_to_state=True)
+        to_json({"status": "synced", "positions_count": len(reconciled), "positions": reconciled})
         
     elif args.command == "execute-buy":
         balance = get_balance(use_cache=False)
