@@ -295,21 +295,127 @@ async def daemon_trade_check_v2(get_balance_func, min_confidence: str = "Medium"
                                 if buy_ok:
                                     usdt = max(0.0, usdt - MIN_TRADE_USDT)
                         else:
-                            # 2) If Spot USDT insufficient, attempt Capital Rotation from stagnant Spot positions!
-                            from hermes.trading.rotation import execute_capital_rotation
-                            score = signal_data.get("score", 8 if confidence == "High" else 6)
-                            rotated, rot_msg = execute_capital_rotation(
-                                candidate_pair=pair,
-                                candidate_price=price,
-                                candidate_score=score,
-                                candidate_confidence=confidence,
-                                candidate_signal_type="LONG",
-                                get_balance_func=get_balance_func
+                            # 2) If Spot USDT insufficient, evaluate cost-aware rotation in SHADOW mode (zero order mutations)
+                            from hermes.accounting.schema import init_db
+                            from hermes.accounting.repository import SqliteRotationRepository
+                            from hermes.accounting.rotation import (
+                                ShadowRotationRecorder,
+                                RotationPolicyConfig,
+                                RotationMarketSnapshot,
                             )
-                            if rotated:
-                                log.info(f"[V2-TRADE] 🔄 Capital rotation executed into {pair}: {rot_msg}")
-                            else:
-                                log.info(f"[V2-TRADE] {pair.upper()}: LONG signal ({confidence}) at ${price} (Spot USDT < ${MIN_TRADE_USDT:.2f}, rotation skipped: {rot_msg}). Auto Futures fallback disabled.")
+                            from hermes.accounting.contracts import (
+                                Completeness,
+                                Venue,
+                                canonical_decimal,
+                            )
+                            from hermes.config import (
+                                ACCOUNTING_DB_PATH,
+                                ROTATION_ENABLED,
+                                ROTATION_SHADOW_MODE,
+                                ROTATION_SCORE_DELTA,
+                                ROTATION_MIN_PNL_PCT,
+                                ROTATION_MAX_PNL_PCT,
+                                ROTATION_MIN_HOLD_SECS,
+                                ROTATION_COOLDOWN_SECS,
+                            )
+                            import hermes.config as cfg
+
+                            rot_enabled = getattr(cfg, "ROTATION_ENABLED", ROTATION_ENABLED)
+                            rot_shadow = getattr(cfg, "ROTATION_SHADOW_MODE", ROTATION_SHADOW_MODE)
+                            db_path = getattr(cfg, "ACCOUNTING_DB_PATH", ACCOUNTING_DB_PATH)
+                            init_db(db_path)
+
+                            score = signal_data.get("score", 8 if confidence == "High" else 6)
+                            now_ms = int(time.time() * 1000)
+
+                            cand_snapshot = RotationMarketSnapshot(
+                                snapshot_id=f"snap_cand_{pair.upper()}_{now_ms}",
+                                account_id="default",
+                                venue=Venue.SPOT,
+                                symbol=pair.upper(),
+                                position_lifecycle_id=None,
+                                position_version=None,
+                                model_version="v2",
+                                feature_schema_version="v1",
+                                observed_at_ms=now_ms,
+                                expires_at_ms=now_ms + 60000,
+                                score=canonical_decimal(str(score), non_negative=True),
+                                best_bid_usdt=canonical_decimal(str(price), non_negative=True),
+                                best_ask_usdt=canonical_decimal(str(price), non_negative=True),
+                                spread_fraction="0.001",
+                                available_depth_usdt="1000",
+                                closed_bar_ids=(f"{pair}_bar",),
+                                completeness=Completeness.VERIFIED,
+                            )
+
+                            rot_policy_config = RotationPolicyConfig(
+                                model_version="v2",
+                                feature_schema_version="v1",
+                                enabled=rot_enabled,
+                                shadow_mode=rot_shadow,
+                                min_score_edge=canonical_decimal(str(getattr(cfg, "ROTATION_SCORE_DELTA", ROTATION_SCORE_DELTA)), non_negative=True),
+                                min_pnl_pct=canonical_decimal(str(getattr(cfg, "ROTATION_MIN_PNL_PCT", ROTATION_MIN_PNL_PCT))),
+                                max_pnl_pct=canonical_decimal(str(getattr(cfg, "ROTATION_MAX_PNL_PCT", ROTATION_MAX_PNL_PCT))),
+                                min_hold_secs=getattr(cfg, "ROTATION_MIN_HOLD_SECS", ROTATION_MIN_HOLD_SECS),
+                                cooldown_secs=getattr(cfg, "ROTATION_COOLDOWN_SECS", ROTATION_COOLDOWN_SECS),
+                            )
+
+                            rotation_repo = SqliteRotationRepository(db_path)
+                            recorder = ShadowRotationRecorder(rotation_repo=rotation_repo, config=rot_policy_config)
+
+                            for held_sym, held_pos in list(state.positions.items()):
+                                if held_sym.upper() == pair.upper():
+                                    continue
+                                h_entry = held_pos.get("entry_price", 0.0)
+                                h_qty = held_pos.get("qty", 0.0)
+                                h_time = held_pos.get("time", 0.0)
+                                h_mode = held_pos.get("mode", "NORMAL")
+                                h_curr_price = prices.get(held_sym.upper(), {}).get("price", h_entry)
+                                h_pnl = (h_curr_price - h_entry) / h_entry if h_entry > 0 else 0.0
+                                h_hold_secs = int(time.time() - h_time)
+                                h_notional = h_qty * h_curr_price
+
+                                from hermes.trading.rotation import get_position_momentum_score
+                                h_score, _ = get_position_momentum_score(held_sym, h_curr_price)
+
+                                held_snapshot = RotationMarketSnapshot(
+                                    snapshot_id=f"snap_held_{held_sym.upper()}_{now_ms}",
+                                    account_id="default",
+                                    venue=Venue.SPOT,
+                                    symbol=held_sym.upper(),
+                                    position_lifecycle_id=f"pos_{held_sym.upper()}",
+                                    position_version=1,
+                                    model_version="v2",
+                                    feature_schema_version="v1",
+                                    observed_at_ms=now_ms,
+                                    expires_at_ms=now_ms + 60000,
+                                    score=canonical_decimal(str(h_score), non_negative=True),
+                                    best_bid_usdt=canonical_decimal(str(h_curr_price), non_negative=True),
+                                    best_ask_usdt=canonical_decimal(str(h_curr_price), non_negative=True),
+                                    spread_fraction="0.001",
+                                    available_depth_usdt="1000",
+                                    closed_bar_ids=(f"{held_sym}_bar",),
+                                    completeness=Completeness.VERIFIED,
+                                )
+
+                                rot_decision = recorder.record_evaluation(
+                                    held_snapshot=held_snapshot,
+                                    candidate_snapshot=cand_snapshot,
+                                    held_position_pnl_pct=canonical_decimal(str(h_pnl)),
+                                    held_holding_time_secs=h_hold_secs,
+                                    now_ms=now_ms,
+                                    held_mode=h_mode,
+                                    position_lifecycle_id=f"pos_{held_sym.upper()}",
+                                    position_version=1,
+                                    position_notional_usdt=canonical_decimal(str(max(5.5, h_notional)), non_negative=True),
+                                )
+                                log.info(
+                                    f"[ROTATION-SHADOW] Evaluated {held_sym.upper()} -> {pair.upper()}: "
+                                    f"action={rot_decision.action.value}, edge={rot_decision.score_edge}, "
+                                    f"benefit=${rot_decision.expected_net_benefit_usdt}, reasons={rot_decision.reason_codes}"
+                                )
+
+                            log.info(f"[V2-TRADE] {pair.upper()}: LONG signal ({confidence}) at ${price} (Spot USDT < ${MIN_TRADE_USDT:.2f}, shadow rotation recorded). Auto Futures fallback disabled.")
                     
                     elif signal_type == "SHORT" and conf_level >= min_conf_level:
                         from hermes.config import FUTURES_ENABLED
@@ -432,8 +538,46 @@ def validate_positions_on_startup(get_balance_func):
     """Reconcile and synchronize positions from Binance myTrades and Spot balance on startup.
 
     Ensures all active assets in Spot have exact entry prices and TP/SL tracking,
-    and removes stale positions with 0 balance.
+    syncs SQLite accounting ledger, and removes stale positions with 0 balance.
     """
+    try:
+        from hermes.accounting.schema import init_db
+        from hermes.accounting.repository import SqliteAccountingRepository
+        from hermes.accounting.contracts import AccountingCutover, CutoverStatus, Venue
+        from hermes.accounting.ingestion import sync_accounting_trades
+        from hermes.config import ACCOUNTING_DB_PATH
+        import hermes.config as cfg
+
+        db_path = getattr(cfg, "ACCOUNTING_DB_PATH", ACCOUNTING_DB_PATH)
+        init_db(db_path)
+        repo = SqliteAccountingRepository(db_path)
+
+        # Wire snapshot creation with initial PENDING state (cutover must not self-approve on flag toggle)
+        con = repo._con()
+        try:
+            cur = con.execute("SELECT cutover_id FROM accounting_cutovers WHERE account_id = 'default' AND venue = 'SPOT' LIMIT 1;")
+            if not cur.fetchone():
+                now_ms = int(time.time() * 1000)
+                repo.create_cutover(
+                    AccountingCutover(
+                        cutover_id="cutover_genesis",
+                        account_id="default",
+                        venue=Venue.SPOT,
+                        cutover_at_ms=now_ms,
+                        baseline_reference="genesis_init",
+                        backfill_from_ms=None,
+                        backfill_through_ms=now_ms,
+                        status=CutoverStatus.PENDING,
+                        approved_at_ms=None,
+                    )
+                )
+        finally:
+            con.close()
+
+        sync_accounting_trades(repo=repo)
+    except Exception as e:
+        log.error(f"[STARTUP-SYNC] Error initializing accounting ledger on startup: {e}")
+
     try:
         from hermes.trading.reconcile import reconcile_positions_from_binance
         reconciled = reconcile_positions_from_binance(save_to_state=True)
@@ -442,8 +586,8 @@ def validate_positions_on_startup(get_balance_func):
         log.error(f"[STARTUP-SYNC] Error reconciling positions on startup: {e}")
 
 
-async def daemon_periodic_sync():
-    """Periodically reconcile open positions from Binance Spot balances & myTrades every 10 minutes."""
+async def daemon_periodic_sync(get_balance_func=None):
+    """Periodically reconcile open positions and accounting ledger from Binance Spot balances & myTrades every 10 minutes."""
     while True:
         try:
             await asyncio.sleep(600)  # Reconcile every 10 minutes
@@ -451,10 +595,18 @@ async def daemon_periodic_sync():
             loop = asyncio.get_running_loop()
             reconciled = await loop.run_in_executor(None, reconcile_positions_from_binance, 5.0, True)
             log.info(f"[PERIODIC-SYNC] Background sync complete. Active positions: {len(reconciled)}")
-            # Daily profit collection check (sweeps target amount once reached)
+
+            # Ingest paginated Binance myTrades into authoritative SQLite accounting repository
+            try:
+                from hermes.accounting.ingestion import sync_accounting_trades
+                await loop.run_in_executor(None, sync_accounting_trades)
+            except Exception as ase:
+                log.error(f"[PERIODIC-SYNC] Error syncing accounting trades: {ase}")
+
+            # SpotToFunding daily profit collector check (sweeps target amount once reached)
             try:
                 from hermes.api.transfer import run_daily_profit_collector
-                loop.run_in_executor(None, run_daily_profit_collector)
+                await loop.run_in_executor(None, run_daily_profit_collector, get_balance_func)
             except Exception as dpe:
                 log.error(f"[PERIODIC-SYNC] Daily profit collector error: {dpe}")
         except asyncio.CancelledError:
@@ -518,5 +670,5 @@ async def run_daemon(get_balance_func, dry_run: bool = False):
         daemon_morning_brief(get_balance_func),
         daemon_rebalance(get_balance_func),
         daemon_dca(get_balance_func),
-        daemon_periodic_sync()
+        daemon_periodic_sync(get_balance_func)
     )

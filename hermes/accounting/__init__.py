@@ -59,9 +59,11 @@ from hermes.accounting.schema import (
     verify_schema_integrity,
 )
 from hermes.accounting.ingestion import (
+    fetch_paginated_binance_trades,
     ingest_binance_trades,
     parse_binance_fill,
     reconcile_and_allocate_fills,
+    sync_accounting_trades,
 )
 from hermes.accounting.collector import (
     BinanceTransferGateway,
@@ -133,6 +135,8 @@ __all__ = [
     "ingest_binance_trades",
     "parse_binance_fill",
     "reconcile_and_allocate_fills",
+    "fetch_paginated_binance_trades",
+    "sync_accounting_trades",
     "BinanceTransferGateway",
     "SpotToFundingCollector",
     "evaluate_distribution",

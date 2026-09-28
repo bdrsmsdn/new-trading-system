@@ -146,58 +146,99 @@ def track_realized_profit(pair: str, pnl_usdt: float) -> None:
     log.info(f"[DAILY-PROFIT] {today} accumulated: ${day['collected_profit']:.4f} / ${DAILY_PROFIT_TARGET_USDT:.2f} (from {pair})")
 
 
-def run_daily_profit_collector() -> bool:
-    """Once accumulated profit >= daily target, transfer exactly the target
-    amount to Funding Wallet and mark the day as collected.
+def run_daily_profit_collector(get_balance_func=None) -> bool:
+    """Evaluate and execute daily profit collection using SpotToFundingCollector when enabled.
 
+    Hard-disables daily_profit_state.json from authorizing transfers.
+    Authoritative distribution policy is evaluated against SQLite accounting ledger snapshot.
     Returns True if a collection transfer was executed.
     """
-    if not getattr(cfg, "DAILY_PROFIT_COLLECTION", DAILY_PROFIT_COLLECTION):
+    import hermes.config as cfg
+    from hermes.config import (
+        DAILY_PROFIT_COLLECTION,
+        AUTO_SWEEP_PROFIT_TO_FUNDING,
+        DAILY_PROFIT_TARGET_USDT,
+        ACCOUNTING_DB_PATH,
+    )
+
+    enabled = getattr(cfg, "DAILY_PROFIT_COLLECTION", DAILY_PROFIT_COLLECTION)
+    if not enabled:
         return False
 
-    state = _load_daily_state()
-    today = _today_key()
-    day = state.get(today)
-    if not day or day.get("target_met"):
-        return False
+    from hermes.accounting.schema import init_db
+    from hermes.accounting.repository import (
+        SqliteAccountingRepository,
+        SqliteTransferIntentRepository,
+    )
+    from hermes.accounting.collector import (
+        BinanceTransferGateway,
+        SpotToFundingCollector,
+    )
+    from hermes.accounting.contracts import (
+        DistributionAction,
+        DistributionPolicyConfig,
+        TransferStatus,
+        canonical_decimal,
+    )
 
-    accumulated = float(day.get("collected_profit", 0.0))
-    if accumulated < DAILY_PROFIT_TARGET_USDT:
-        return False
+    db_path = getattr(cfg, "ACCOUNTING_DB_PATH", ACCOUNTING_DB_PATH)
+    init_db(db_path)
 
-    # Ensure Spot USDT balance can cover the transfer
+    accounting_repo = SqliteAccountingRepository(db_path)
+    intent_repo = SqliteTransferIntentRepository(db_path)
+    transfer_gateway = BinanceTransferGateway()
+
+    policy_config = DistributionPolicyConfig(
+        policy_version="v1",
+        enabled=enabled,
+        legacy_auto_sweep_enabled=getattr(cfg, "AUTO_SWEEP_PROFIT_TO_FUNDING", AUTO_SWEEP_PROFIT_TO_FUNDING),
+        target_usdt=canonical_decimal(str(getattr(cfg, "DAILY_PROFIT_TARGET_USDT", DAILY_PROFIT_TARGET_USDT)), non_negative=True),
+        daily_cap_usdt=canonical_decimal(str(getattr(cfg, "DAILY_PROFIT_TARGET_USDT", DAILY_PROFIT_TARGET_USDT)), non_negative=True),
+        operational_buffer_usdt="0",
+        reserve_fraction="0.25",
+    )
+
+    collector = SpotToFundingCollector(
+        accounting_repo=accounting_repo,
+        intent_repo=intent_repo,
+        transfer_gateway=transfer_gateway,
+        policy_config=policy_config,
+    )
+
     try:
-        from hermes.api.balance import get_balance
-        balances = get_balance(use_cache=False)
+        if get_balance_func:
+            balances = get_balance_func(use_cache=False)
+        else:
+            from hermes.api.balance import get_balance
+            balances = get_balance(use_cache=False)
         spot_usdt = float(balances.get("usdt", 0) or balances.get("USDT", 0))
-        log.info(f"[DAILY-PROFIT] Spot USDT balance: ${spot_usdt:.2f}")
     except Exception as e:
         log.error(f"[DAILY-PROFIT] Balance check failed: {e}")
-        return False
+        spot_usdt = 0.0
 
-    if spot_usdt < DAILY_PROFIT_TARGET_USDT:
-        log.info(f"[DAILY-PROFIT] Spot USDT ${spot_usdt:.2f} below target ${DAILY_PROFIT_TARGET_USDT:.2f}, deferring collection.")
-        return False
+    from hermes.state import prices
+    from hermes.trading.portfolio_risk import calculate_portfolio_equity
+    equity = calculate_portfolio_equity({"usdt": spot_usdt}, prices)
 
-    res = transfer_spot_to_funding(asset="USDT", amount=DAILY_PROFIT_TARGET_USDT)
-    if "tranId" not in res:
-        log.error(f"[DAILY-PROFIT] Transfer failed: {res}")
-        return False
-
-    day["target_met"] = True
-    _save_daily_state(state)
-
-    surplus = accumulated - DAILY_PROFIT_TARGET_USDT
-    msg = (
-        f"🎯 *HERMES DAILY PROFIT TARGET TERCAPAI!*\n"
-        f"────────────────────\n"
-        f"📅 Tanggal (UTC): *{today}*\n"
-        f"💰 Profit Terkumpul Hari Ini: *${accumulated:.4f} USDT*\n"
-        f"🏦 Dikirim ke Funding Wallet: *${DAILY_PROFIT_TARGET_USDT:.2f} USDT*\n"
-        f"♻️ Sisa Profit Compound di Spot: *${surplus:.4f} USDT*\n"
-        f"────────────────────\n"
-        f"✅ Target harian 1 USDT/hari tercapai! Sisa profit tetap compound sebagai modal trading di Spot. 🚀🛡️"
+    decision, intent = collector.run_daily_collection_tick(
+        account_id="default",
+        free_spot_usdt=canonical_decimal(str(max(0.0, spot_usdt)), non_negative=True),
+        total_equity_usdt=canonical_decimal(str(max(0.0, equity)), non_negative=True),
+        open_risk_usdt="0",
     )
-    telegram_send(msg)
-    log.info(f"[DAILY-PROFIT] ✅ Daily target collected: ${DAILY_PROFIT_TARGET_USDT:.2f} to Funding (accumulated: ${accumulated:.4f})")
-    return True
+
+    if decision.action == DistributionAction.PLAN_TRANSFER and intent and intent.status == TransferStatus.CONFIRMED:
+        today = _today_key()
+        msg = (
+            f"🎯 *HERMES DAILY PROFIT TARGET TERCAPAI!*\n"
+            f"────────────────────\n"
+            f"📅 Tanggal (UTC): *{today}*\n"
+            f"💰 Profit Didistribusikan: *${decision.amount_usdt} USDT*\n"
+            f"🏦 Dikirim ke Funding Wallet: *${decision.amount_usdt} USDT*\n"
+            f"────────────────────\n"
+            f"✅ Target harian tercapai! Distribusi diverifikasi via SQLite accounting ledger. 🚀🛡️"
+        )
+        telegram_send(msg)
+        return True
+
+    return False

@@ -286,12 +286,18 @@ def execute_sell(pair: str, price: float, qty: float, reason: str = "", order_ty
                 peak_price=peak_price
             )
 
-            # Profit handling: daily collection model (accumulates in Spot,
-            # collector sweeps once daily target is reached) with legacy
-            # per-trade sweep kept as optional fallback.
+            # Profit handling: daily collection model via authoritative SQLite accounting ledger.
+            # daily_profit_state.json is updated as an archival tracker only (never authorizes transfers).
             from hermes.config import AUTO_SWEEP_PROFIT_TO_FUNDING, PROFIT_SWEEP_MIN_USDT, DAILY_PROFIT_COLLECTION
             pnl_usdt = (price - entry) * qty
             try:
+                # Sync accounting ledger from Binance myTrades
+                try:
+                    from hermes.accounting.ingestion import sync_accounting_trades
+                    sync_accounting_trades(symbols=[f"{pair.upper()}USDT"])
+                except Exception as ase:
+                    log.debug(f"[PROFIT-HANDLING] Accounting sync skipped: {ase}")
+
                 if DAILY_PROFIT_COLLECTION:
                     from hermes.api.transfer import track_realized_profit, run_daily_profit_collector
                     track_realized_profit(pair=pair, pnl_usdt=pnl_usdt)

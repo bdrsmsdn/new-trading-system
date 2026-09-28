@@ -432,7 +432,7 @@ class SpotToFundingCollector:
         # If the claimed intent is not PLANNED (e.g. already existed in SUBMITTING/CONFIRMED), do not resend
         if intent.status != TransferStatus.PLANNED:
             log.info(f"[COLLECTOR] Intent already claimed with status {intent.status.value}")
-            return decision, intent
+            return decision, None
 
         # 5. Transition to SUBMITTING before calling external gateway
         intent = self.intent_repo.transition_transfer(

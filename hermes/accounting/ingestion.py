@@ -9,7 +9,10 @@ from __future__ import annotations
 from decimal import Decimal
 import hashlib
 import json
+import logging
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+
+log = logging.getLogger(__name__)
 
 from hermes.accounting.contracts import (
     AccountingRepository,
@@ -200,3 +203,110 @@ def reconcile_and_allocate_fills(
             outcome = repo.apply_fifo_sell(fill.key)
             outcomes.append(outcome)
     return outcomes
+
+
+def fetch_paginated_binance_trades(
+    symbol: str,
+    limit: int = 1000,
+    start_from_id: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Fetch all paginated trades for a symbol from Binance /api/v3/myTrades."""
+    from hermes.api.auth import binance_signed_request
+    all_trades: List[Dict[str, Any]] = []
+    from_id = start_from_id
+    sym = symbol.upper()
+    if not any(sym.endswith(base) for base in ("USDT", "BTC", "BNB", "BUSD", "FDUSD", "USDC")):
+        sym = f"{sym}USDT"
+
+    while True:
+        params: Dict[str, Any] = {"symbol": sym, "limit": limit}
+        if from_id is not None:
+            params["fromId"] = from_id
+        try:
+            trades = binance_signed_request("/api/v3/myTrades", params=params, method="GET")
+        except Exception:
+            break
+
+        if not isinstance(trades, list) or not trades:
+            break
+
+        all_trades.extend(trades)
+        if len(trades) < limit:
+            break
+
+        max_id = max(int(t.get("id", 0)) for t in trades)
+        from_id = max_id + 1
+
+    return all_trades
+
+
+def sync_accounting_trades(
+    repo: Optional[AccountingRepository] = None,
+    symbols: Optional[Sequence[str]] = None,
+    valuation_map: Optional[Mapping[str, DecimalString]] = None,
+    account_id: str = "default",
+    db_path: Optional[Union[str, Any]] = None,
+) -> Tuple[int, int]:
+    """Ingest paginated Binance myTrades for bot-owned Spot assets, value fees, and execute FIFO reconciliation.
+
+    Returns (total_inserted, total_duplicates).
+    """
+    import hermes.config as cfg
+    from hermes.config import ACCOUNTING_DB_PATH, ALL_TRACKED
+    from hermes.accounting.schema import init_db
+    from hermes.accounting.repository import SqliteAccountingRepository
+    from hermes.state import state, prices
+
+    if repo is None:
+        target_db = db_path or getattr(cfg, "ACCOUNTING_DB_PATH", ACCOUNTING_DB_PATH)
+        init_db(target_db)
+        repo = SqliteAccountingRepository(target_db)
+
+    target_symbols = set()
+    if symbols:
+        for s in symbols:
+            target_symbols.add(s.upper())
+    else:
+        for p in ALL_TRACKED:
+            target_symbols.add(f"{p.upper()}USDT" if not p.upper().endswith("USDT") else p.upper())
+        for p in state.positions.keys():
+            sym = p.upper() if p.upper().endswith("USDT") else f"{p.upper()}USDT"
+            target_symbols.add(sym)
+
+    val_map: Dict[str, DecimalString] = {}
+    if valuation_map:
+        val_map.update(valuation_map)
+    else:
+        for coin, pdata in prices.items():
+            p = pdata.get("price")
+            if p and p > 0:
+                val_map[coin.upper()] = str(p)
+
+    total_inserted = 0
+    total_duplicates = 0
+
+    for sym in sorted(target_symbols):
+        trades = fetch_paginated_binance_trades(sym)
+        if not trades:
+            continue
+
+        for trade in trades:
+            try:
+                fill = parse_binance_fill(
+                    trade,
+                    account_id=account_id,
+                    venue=Venue.SPOT,
+                    valuation_map=val_map,
+                )
+                was_inserted = repo.ingest_fill(fill)
+                if was_inserted:
+                    total_inserted += 1
+                else:
+                    total_duplicates += 1
+
+                if fill.side == TradeSide.SELL:
+                    repo.apply_fifo_sell(fill.key)
+            except Exception as e:
+                log.warning(f"[ACCOUNTING-SYNC] Trade ingestion failed for trade {trade.get('id')}: {e}")
+
+    return total_inserted, total_duplicates

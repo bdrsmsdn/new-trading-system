@@ -42,6 +42,9 @@ def parse_bool_env(key: str, default: bool = False, env_dict: Optional[Dict[str,
         return default
     return str(raw).strip().lower() in ("true", "1", "yes", "y", "t", "on")
 
+# Accounting & Ledger Feature Gate (Explicit Opt-In Required, Default False)
+ACCOUNTING_ENABLED = parse_bool_env("ACCOUNTING_ENABLED", False)
+
 TELEGRAM_BOT_TOKEN = _env.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = _env.get("TELEGRAM_CHAT_ID", "")
 
@@ -77,6 +80,7 @@ MIN_EQUITY_USDT_RESERVE_PCT = 0.25     # 25.0% minimum tradable USDT cash reserv
 
 # Capital Rotation & Opportunity Cost Parameters (Explicit Opt-In Required, Default False)
 ROTATION_ENABLED = parse_bool_env("ROTATION_ENABLED", False)
+ROTATION_SHADOW_MODE = parse_bool_env("ROTATION_SHADOW_MODE", True)
 ROTATION_MIN_HOLD_SECS = 1800      # 30 mins holding time minimum before rotating out
 ROTATION_SCORE_DELTA = 3           # Candidate must score at least 3 points higher than stagnant position
 ROTATION_MAX_PNL_PCT = 0.02        # Only rotate out positions with <= +2.0% profit (never cut winners!)
