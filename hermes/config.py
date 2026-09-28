@@ -49,6 +49,15 @@ TRAILING_STOP_PCT = 0.025          # 2.5% trailing pullback tolerance
 FEE_BUFFER = 0.03
 TRADE_COOLDOWN = 60
 
+# Futures Trading Gate (Explicit Opt-In Required)
+FUTURES_ENABLED = _env.get("FUTURES_ENABLED", "false").lower() == "true"
+
+# Centralized Portfolio Risk Gates
+RISK_BUDGET_PER_TRADE_PCT = 0.005      # 0.5% max equity risk per trade
+MAX_AGGREGATE_STOP_RISK_PCT = 0.02     # 2.0% max aggregate planned stop risk
+DAILY_LOSS_CIRCUIT_BREAKER_PCT = 0.02  # 2.0% mark-to-market daily loss circuit breaker
+MIN_EQUITY_USDT_RESERVE_PCT = 0.25     # 25.0% minimum tradable USDT cash reserve
+
 # Capital Rotation & Opportunity Cost Parameters
 ROTATION_ENABLED = True
 ROTATION_MIN_HOLD_SECS = 1800      # 30 mins holding time minimum before rotating out

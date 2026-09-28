@@ -95,6 +95,14 @@ def run_dca(pair: str, config: DCAConfig, balance: float, current_price: float) 
     avg_price = dca["avg_price"] if dca["avg_price"] > 0 else entry_price
     trigger_threshold = avg_price * (1 - config.trigger_pct)
 
+    # Precedence: Disallow buying into a triggered stop / stop loss condition
+    from hermes.config import STOP_LOSS_PCT
+    sl_pct = float(pos.get("stop_loss_pct", STOP_LOSS_PCT))
+    if current_price <= entry_price * (1.0 - sl_pct) or pos.get("state") in ("EXIT_PENDING", "CLOSED"):
+        log.warning(f"[DCA] {pair.upper()}: Stop loss triggered or position exiting (price {current_price} <= SL {entry_price * (1.0 - sl_pct):.4f}). DCA buy rejected.")
+        result["action"] = "rejected_triggered_stop"
+        return result
+
     # Check if price dropped below trigger
     if current_price >= trigger_threshold:
         result["action"] = None

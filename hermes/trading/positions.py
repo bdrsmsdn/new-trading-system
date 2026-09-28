@@ -350,8 +350,8 @@ def check_open_positions(current_price: float, balance: Dict[str, float], specif
                 state.save()
             continue
 
-        # ─── 5. SIGNAL-BASED EARLY EXIT (Legacy candidate) ──────────────────
-        # Only trigger if profit is already substantial (>= +2.0%) and not in riding/evaluating
+        # ─── 5. SIGNAL-BASED EARLY EXIT (Confirmed reversal policy) ─────────
+        # Evaluated only if profit is >= +2.0% and not in riding/evaluating
         if pnl_pct >= 0.02 and pos_state not in ("RIDING", "TP_EVALUATING", "EXIT_PENDING"):
             cached_mrsi = _multi_rsi_cache.get(pair, {})
             if cached_mrsi and (time.time() - cached_mrsi.get("ts", 0)) < _MULTI_RSI_TTL:
@@ -360,7 +360,19 @@ def check_open_positions(current_price: float, balance: Dict[str, float], specif
             else:
                 multi_rsi = {"3m": get_rsi(pair), "1h": 50.0, "4h": 50.0}
             signal, score, reasons = get_signal(pair, current_price, multi_rsi)
-            if signal == "STRONG_SELL":
+
+            from hermes.trading.signal_policy import evaluate_signal_precedence
+            precedence_dec = evaluate_signal_precedence(
+                symbol=pair,
+                side="LONG",
+                entry_price=entry,
+                current_price=current_price,
+                position_state=pos_state,
+                raw_signal=signal,
+                signal_score=score,
+            )
+
+            if precedence_dec.action in ("EXIT_CONFIRMED_REVERSAL", "EXIT_PROTECTIVE", "EXIT_EMERGENCY"):
                 coin = pair.replace("USDT", "")
                 balances = get_balance(use_cache=False)
                 coin_lower = coin.lower()
@@ -370,12 +382,12 @@ def check_open_positions(current_price: float, balance: Dict[str, float], specif
                     del state.positions[pair]
                     state.save()
                     continue
-                log.info(f"Signal exit for {pair}: {signal} with +{pnl_pct*100:.2f}%")
+                log.info(f"Signal exit for {pair}: {precedence_dec.reason} with +{pnl_pct*100:.2f}%")
                 pos["state"] = "EXIT_PENDING"
-                pos["pending_exit_reason"] = f"Signal: {signal}"
+                pos["pending_exit_reason"] = precedence_dec.reason
                 pos["last_sell_attempt"] = time.time()
                 state.save()
-                success, err = execute_sell(pair, current_price, qty, f"Signal: {signal}")
+                success, err = execute_sell(pair, current_price, qty, precedence_dec.reason)
                 if not success:
                     pos["pending_exit_error"] = err
                     state.save()
