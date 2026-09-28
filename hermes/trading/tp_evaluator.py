@@ -289,25 +289,45 @@ def send_tp_extension_alert(
     is_futures: bool = False,
     leverage: int = 1,
     side: str = "LONG",
+    source: str = "DETERMINISTIC",
 ) -> None:
     """Send Telegram alert when a position hits +10% and is EXTENDED to ride the trend."""
     clean_pair = pair.upper().replace("-PERP", "")
     type_str = f"FUTURES ({leverage}x {side.upper()})" if is_futures else f"SPOT ({side.upper()})"
 
+    # Disclose decision provenance transparently: do not claim AI when deterministic was used
+    if source == "AI_ADVISORY":
+        decision_line = "🧠 *Keputusan:* **EXTEND & RIDE (AI Advisory + Gate Validated) 🚀**"
+    elif source == "DETERMINISTIC":
+        decision_line = "⚙️ *Keputusan:* **EXTEND & RIDE (Kebijakan Teknis Deterministik) 🚀**"
+    elif source == "DETERMINISTIC_FALLBACK":
+        decision_line = "⚙️ *Keputusan:* **EXTEND & RIDE (Fallback Deterministik - Validasi AI Dilewati) 🚀**"
+    elif source in ("DATA_QUALITY_FAIL_CLOSED", "EMERGENCY_VETO"):
+        decision_line = f"🛑 *Keputusan:* **TAKE PROFIT (Protective Veto: {source}) 🎯**"
+    else:
+        decision_line = f"⚙️ *Keputusan:* **EXTEND & RIDE ({source}) 🚀**"
+
+    # Distinguish Gross Price Gain vs Futures ROE vs Net Realized PnL
+    if is_futures:
+        gain_str = f"📈 Gross Return: *+{pnl_pct * 100:.2f}% ROE* (Sebelum funding & fee exchange)"
+    else:
+        gain_str = f"📈 Gross Price Gain: *+{pnl_pct * 100:.2f}%* (Sebelum fee transaksi & slippage)"
+
     msg = (
         f"🚀 *HERMES DYNAMIC TP EXTENSION — {clean_pair}*\n"
         f"Tipe: *{type_str}* | Target +10.0% Tercapai! 🎯\n"
         f"────────────────────\n"
-        f"📈 Gain Saat Ini: *+{pnl_pct * 100:.2f}%*\n"
+        f"{gain_str}\n"
         f"💵 Entry: *{format_price(entry_price)}* → Sekarang: *{format_price(current_price)}*\n"
         f"────────────────────\n"
-        f"🧠 *AI Decision:* **EXTEND & RIDE THE TREND 🚀**\n"
+        f"{decision_line}\n"
         f"📊 *Analisis:* {reason}\n"
         f"📰 *Sentimen News:* {sentiment_str}\n"
         f"────────────────────\n"
-        f"🔒 *Profit Floor Terkunci:* *+{floor_pct * 100:.1f}%* ({format_price(floor_price)})\n"
+        f"🛡️ *Profit Floor Trigger:* *+{floor_pct * 100:.1f}%* ({format_price(floor_price)})\n"
+        f"   _(Trigger software bersyarat; bukan eksekusi dijamin)_\n"
         f"🛡️ *Trailing Stop:* *{trail_pct * 100:.1f}%* di bawah puncak tertinggi\n"
         f"────────────────────\n"
-        f"ℹ️ *Bot menahan posisi karena momentum sangat kuat. Stop loss sudah dinaikkan di atas harga beli (+{floor_pct * 100:.0f}%), sehingga posisi ini mengunci profit floor sambil mengejar puncak!* 🚀"
+        f"ℹ️ *Bot menahan posisi karena momentum memenuhi kriteria teknis. Trigger stop dinaikkan ke level floor (+{floor_pct * 100:.1f}%) sebagai proteksi kondisional (eksekusi aktual bergantung pada likuiditas dan slippage order). Nilai di atas adalah Gross Price PnL / ROE sebelum dipotong estimasi fee exchange.* 🚀"
     )
     telegram_send(msg)

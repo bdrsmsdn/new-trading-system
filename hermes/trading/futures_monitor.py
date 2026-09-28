@@ -198,11 +198,13 @@ def check_open_futures_positions() -> None:
                                 pos_data["state"] = "RIDING"
                                 pos_data["mode"] = "RIDING_TREND"
                                 pos_data["floor_trigger_roe"] = floor_roe_val
+                                pos_data["profit_floor_trigger_pct"] = floor_roe_val
+                                pos_data["guaranteed_floor_pct"] = floor_roe_val
                                 pos_data["futures_roe_drawdown_points"] = trail_roe_val
                                 pos_data["evaluation_reason"] = str(evaluation.get("reason", ""))
                                 state.save()
 
-                                log.info(f"🚀 [FUTURES-EXTENDED] {pos_key}: Trend Extension activated! Floor ROE: +{floor_roe_val*100:.1f}%")
+                                log.info(f"🚀 [FUTURES-EXTENDED] {pos_key}: Trend Extension activated! Floor Trigger ROE: +{floor_roe_val*100:.1f}%")
                                 try:
                                     floor_price = (
                                         entry_price * (1.0 + (floor_roe_val / leverage))
@@ -221,7 +223,8 @@ def check_open_futures_positions() -> None:
                                         sentiment_str=str(evaluation.get("sentiment_summary", "")),
                                         is_futures=True,
                                         leverage=leverage,
-                                        side=side
+                                        side=side,
+                                        source=str(evaluation.get("source", "DETERMINISTIC")),
                                     )
                                 except Exception as te:
                                     log.debug(f"Futures extension alert error: {te}")
@@ -291,16 +294,19 @@ def check_open_futures_positions() -> None:
                         hard_stop_roe=STOP_LOSS_PCT,
                         side=side,
                         mode="RIDING",
-                        floor_trigger_roe=pos_data.get("floor_trigger_roe", 0.08),
+                        floor_trigger_roe=pos_data.get("floor_trigger_roe", pos_data.get("profit_floor_trigger_pct", pos_data.get("guaranteed_floor_pct", 0.08))),
                         riding_roe_drawdown_points=pos_data.get("futures_roe_drawdown_points", 0.035),
                     )
 
                     # Update ratcheted floor in state
                     if exit_decision.profit_floor_roe is not None:
                         updated_floor_roe = float(exit_decision.profit_floor_roe)
-                        if updated_floor_roe > pos_data.get("floor_trigger_roe", 0.08):
+                        current_floor_roe = pos_data.get("floor_trigger_roe", pos_data.get("profit_floor_trigger_pct", pos_data.get("guaranteed_floor_pct", 0.08)))
+                        if updated_floor_roe > current_floor_roe:
                             pos_data["floor_trigger_roe"] = updated_floor_roe
-                            log.info(f"🚀 [FUTURES-RATCHET] {pos_key}: Floor ROE raised to +{updated_floor_roe*100:.1f}%")
+                            pos_data["profit_floor_trigger_pct"] = updated_floor_roe
+                            pos_data["guaranteed_floor_pct"] = updated_floor_roe
+                            log.info(f"🚀 [FUTURES-RATCHET] {pos_key}: Floor Trigger ROE raised to +{updated_floor_roe*100:.1f}%")
                             state.save()
 
                     if exit_decision.should_exit:

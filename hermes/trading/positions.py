@@ -130,7 +130,7 @@ def check_open_positions(current_price: float, balance: Dict[str, float], specif
                 hard_stop_pct=STOP_LOSS_PCT,
                 side="LONG",
                 mode="TP_EVALUATING",
-                profit_floor_pct=pos.get("profit_floor_pct", 0.08),
+                profit_floor_pct=pos.get("profit_floor_trigger_pct", pos.get("profit_floor_pct", pos.get("guaranteed_floor_pct", 0.08))),
             )
 
             if exit_decision.should_exit:
@@ -178,6 +178,7 @@ def check_open_positions(current_price: float, balance: Dict[str, float], specif
                         trail_pct_val = float(evaluation.get("recommended_trail_pct", 0.035))
                         pos["profit_floor_pct"] = floor_pct_val
                         pos["profit_floor_trigger_pct"] = floor_pct_val
+                        pos["guaranteed_floor_pct"] = floor_pct_val
                         pos["trailing_stop_pct"] = trail_pct_val
                         pos["evaluation_reason"] = str(evaluation.get("reason", ""))
                         state.save()
@@ -185,7 +186,7 @@ def check_open_positions(current_price: float, balance: Dict[str, float], specif
                         floor_price = entry * (1.0 + floor_pct_val)
                         log.info(
                             f"🚀 [TP-EXTENDED] {pair}: Trend Extension activated! "
-                            f"Floor: +{floor_pct_val*100:.1f}% ({format_price(floor_price)})"
+                            f"Floor Trigger: +{floor_pct_val*100:.1f}% ({format_price(floor_price)})"
                         )
                         try:
                             send_tp_extension_alert(
@@ -199,7 +200,8 @@ def check_open_positions(current_price: float, balance: Dict[str, float], specif
                                 reason=str(evaluation.get("reason", "")),
                                 sentiment_str=str(evaluation.get("sentiment_summary", "")),
                                 is_futures=False,
-                                side="LONG"
+                                side="LONG",
+                                source=str(evaluation.get("source", "DETERMINISTIC")),
                             )
                         except Exception as te:
                             log.debug(f"Extension alert error: {te}")
@@ -257,17 +259,19 @@ def check_open_positions(current_price: float, balance: Dict[str, float], specif
                 hard_stop_pct=STOP_LOSS_PCT,
                 side="LONG",
                 mode="RIDING",
-                profit_floor_pct=pos.get("profit_floor_pct", 0.08),
+                profit_floor_pct=pos.get("profit_floor_trigger_pct", pos.get("profit_floor_pct", pos.get("guaranteed_floor_pct", 0.08))),
                 riding_trail_pct=pos.get("trailing_stop_pct", 0.035),
             )
 
             # Update ratcheted floor in state
             if exit_decision.profit_floor_price is not None:
                 updated_floor_pct = float((exit_decision.profit_floor_price - Decimal(str(entry))) / Decimal(str(entry)))
-                if updated_floor_pct > pos.get("profit_floor_pct", 0.08):
+                current_floor = pos.get("profit_floor_trigger_pct", pos.get("profit_floor_pct", pos.get("guaranteed_floor_pct", 0.08)))
+                if updated_floor_pct > current_floor:
                     pos["profit_floor_pct"] = updated_floor_pct
                     pos["profit_floor_trigger_pct"] = updated_floor_pct
-                    log.info(f"🚀 [FLOOR-RATCHET] {pair}: Profit floor raised to +{updated_floor_pct*100:.1f}%")
+                    pos["guaranteed_floor_pct"] = updated_floor_pct
+                    log.info(f"🚀 [FLOOR-RATCHET] {pair}: Profit floor trigger raised to +{updated_floor_pct*100:.1f}%")
                     state.save()
 
             if exit_decision.should_exit:
