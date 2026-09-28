@@ -459,7 +459,7 @@ async def daemon_periodic_sync():
             await asyncio.sleep(600)  # Reconcile every 10 minutes
             from hermes.trading.reconcile import reconcile_positions_from_binance
             loop = asyncio.get_running_loop()
-            reconciled = await loop.run_in_executor(None, reconcile_positions_from_binance, 0.80, True)
+            reconciled = await loop.run_in_executor(None, reconcile_positions_from_binance, 5.0, True)
             log.info(f"[PERIODIC-SYNC] Background sync complete. Active positions: {len(reconciled)}")
         except asyncio.CancelledError:
             break
