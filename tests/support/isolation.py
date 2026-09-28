@@ -358,6 +358,7 @@ class SingletonSnapshot:
 
     def __init__(self) -> None:
         self.state_positions: Any = None
+        self.state_futures_positions: Any = None
         self.state_last_trade_time: Any = None
         self.state_price_history: Any = None
         self.state_rsi_state: Any = None
@@ -386,6 +387,7 @@ class SingletonSnapshot:
             st = sys.modules["hermes.state"]
             if hasattr(st, "state") and st.state is not None:
                 self.state_positions = copy.deepcopy(getattr(st.state, "positions", {}))
+                self.state_futures_positions = copy.deepcopy(getattr(st.state, "futures_positions", {}))
                 self.state_last_trade_time = copy.deepcopy(getattr(st.state, "last_trade_time", {}))
                 self.state_price_history = copy.deepcopy(getattr(st.state, "price_history", {}))
                 self.state_rsi_state = copy.deepcopy(getattr(st.state, "rsi_state", {}))
@@ -427,6 +429,8 @@ class SingletonSnapshot:
             if hasattr(st, "state") and st.state is not None:
                 if self.state_positions is not None:
                     st.state.positions = copy.deepcopy(self.state_positions)
+                if hasattr(self, "state_futures_positions") and self.state_futures_positions is not None:
+                    st.state.futures_positions = copy.deepcopy(self.state_futures_positions)
                 if self.state_last_trade_time is not None:
                     st.state.last_trade_time = copy.deepcopy(self.state_last_trade_time)
                 if self.state_price_history is not None:

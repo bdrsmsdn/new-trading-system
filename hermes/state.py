@@ -7,7 +7,8 @@ class State:
     """Manages persistent state for the trader."""
     
     def __init__(self):
-        self.positions: Dict[str, Dict] = {}      # {pair: {entry_price, qty, time, stop_loss, take_profit}}
+        self.positions: Dict[str, Dict] = {}      # {pair: {entry_price, qty, time, stop_loss, take_profit, state, peak_price, ...}}
+        self.futures_positions: Dict[str, Dict] = {} # {pos_key: {symbol, side, lifecycle_id, peak_roe, state, ...}}
         self.last_trade_time: Dict[str, float] = {}  # {pair: timestamp}
         self.price_history: Dict[str, List[float]] = {}  # {pair: [prices]}
         self.rsi_state: Dict[str, Dict] = {}      # {pair: {avg_gain, avg_loss, last_price, initialized}}
@@ -26,6 +27,7 @@ class State:
             try:
                 data = json.loads(STATE_FILE.read_text())
                 self.positions = data.get("positions", {})
+                self.futures_positions = data.get("futures_positions", {})
                 self.last_trade_time = data.get("last_trade_time", {})
                 self.active_pairs = data.get("active_pairs", INITIAL_ACTIVE.copy())
                 self.dry_run = data.get("dry_run", False)
@@ -51,6 +53,7 @@ class State:
         try:
             STATE_FILE.write_text(json.dumps({
                 "positions": self.positions,
+                "futures_positions": self.futures_positions,
                 "last_trade_time": self.last_trade_time,
                 "active_pairs": self.active_pairs,
                 "dry_run": self.dry_run,
