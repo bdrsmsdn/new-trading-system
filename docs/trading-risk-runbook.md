@@ -246,7 +246,10 @@ Before releasing updates or restarting production trading services, operators mu
 - [ ] **Production State Untouched:**
   Verify that test runs did not write to production ledger, state files, or make unauthorized external API calls.
 - [ ] **Configuration Audited:**
-  * `FUTURES_ENABLED = False` (unless explicit PO signoff obtained).
+  * `FUTURES_ENABLED = False` (default disabled, explicit env opt-in required).
+  * `ROTATION_ENABLED = False` (default disabled, explicit env opt-in required).
+  * `DAILY_PROFIT_COLLECTION = False` (default disabled until net loss/fill/fee accounting ledger is implemented; never claim net accounting fixed).
+  * `AUTO_SWEEP_PROFIT_TO_FUNDING = False` (default disabled).
   * `PORTFOLIO_MAX_TRADE_RISK_PCT = 0.005` (0.5%).
   * `PORTFOLIO_MAX_TOTAL_STOP_RISK_PCT = 0.02` (2.0%).
   * `PORTFOLIO_CIRCUIT_BREAKER_DAILY_LOSS_PCT = 0.02` (2.0%).

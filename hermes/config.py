@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Optional, Dict, Any
 
 # Paths
 SCRIPT_DIR = Path(__file__).resolve().parent.parent
@@ -25,6 +26,20 @@ def load_env() -> dict:
 
 _env = load_env()
 
+def parse_bool_env(key: str, default: bool = False, env_dict: Optional[Dict[str, Any]] = None) -> bool:
+    """Parse a boolean environment variable from os.environ or loaded .env dictionary.
+
+    Explicit opt-in required; defaults to False unless explicitly set to truthy string.
+    """
+    if env_dict is None:
+        env_dict = _env
+    raw = os.environ.get(key, env_dict.get(key, None))
+    if isinstance(raw, bool):
+        return raw
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() in ("true", "1", "yes", "y", "t", "on")
+
 TELEGRAM_BOT_TOKEN = _env.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = _env.get("TELEGRAM_CHAT_ID", "")
 
@@ -35,7 +50,7 @@ ROUTER_MODEL = _env.get("ROUTER_MODEL", "ag/gemini-3.7-flash-high")
 AGENT_MEMORY_FILE = SCRIPT_DIR / "hermes_agent_memory.json"
 
 # Binance Configuration
-TESTNET = _env.get("TESTNET", "false").lower() == "true"
+TESTNET = parse_bool_env("TESTNET", False)
 
 # Trading Parameters (USDT amounts for Binance)
 MAX_TRADE_USDT = 100
@@ -49,8 +64,8 @@ TRAILING_STOP_PCT = 0.025          # 2.5% trailing pullback tolerance
 FEE_BUFFER = 0.03
 TRADE_COOLDOWN = 60
 
-# Futures Trading Gate (Explicit Opt-In Required)
-FUTURES_ENABLED = _env.get("FUTURES_ENABLED", "false").lower() == "true"
+# Futures Trading Gate (Explicit Opt-In Required, Default False)
+FUTURES_ENABLED = parse_bool_env("FUTURES_ENABLED", False)
 
 # Centralized Portfolio Risk Gates
 RISK_BUDGET_PER_TRADE_PCT = 0.005      # 0.5% max equity risk per trade
@@ -58,8 +73,8 @@ MAX_AGGREGATE_STOP_RISK_PCT = 0.02     # 2.0% max aggregate planned stop risk
 DAILY_LOSS_CIRCUIT_BREAKER_PCT = 0.02  # 2.0% mark-to-market daily loss circuit breaker
 MIN_EQUITY_USDT_RESERVE_PCT = 0.25     # 25.0% minimum tradable USDT cash reserve
 
-# Capital Rotation & Opportunity Cost Parameters
-ROTATION_ENABLED = True
+# Capital Rotation & Opportunity Cost Parameters (Explicit Opt-In Required, Default False)
+ROTATION_ENABLED = parse_bool_env("ROTATION_ENABLED", False)
 ROTATION_MIN_HOLD_SECS = 1800      # 30 mins holding time minimum before rotating out
 ROTATION_SCORE_DELTA = 3           # Candidate must score at least 3 points higher than stagnant position
 ROTATION_MAX_PNL_PCT = 0.02        # Only rotate out positions with <= +2.0% profit (never cut winners!)
@@ -113,13 +128,14 @@ REBALANCE_DRIFT_THRESHOLD = 0.20
 USE_STRATEGY_V2 = True
 SPIKE_TRIGGER_PCT = 0.012  # 1.2% instant spike triggers immediate V2 evaluation
 
-# Profit Auto-Sweep to Funding Wallet (Survival & P2P IDR Fund)
-# DAILY COLLECTION MODEL: profits accumulate in Spot first; once the daily
-# target (DAILY_PROFIT_TARGET_USDT) is reached, only that amount is swept
-# to Funding. Remainder compounds in Spot as trading capital.
-AUTO_SWEEP_PROFIT_TO_FUNDING = False
+# Profit Auto-Sweep & Daily Profit Collection
+# DAILY COLLECTION MODEL: Disabled by default (DAILY_PROFIT_COLLECTION=False)
+# pending full net loss/fill/fee accounting ledger implementation (T3/T5).
+# Legacy per-trade sweep (AUTO_SWEEP_PROFIT_TO_FUNDING) remains False.
+# Explicit env opt-in is required to enable collection.
+AUTO_SWEEP_PROFIT_TO_FUNDING = parse_bool_env("AUTO_SWEEP_PROFIT_TO_FUNDING", False)
 PROFIT_SWEEP_MIN_USDT = 0.05
-DAILY_PROFIT_COLLECTION = True
+DAILY_PROFIT_COLLECTION = parse_bool_env("DAILY_PROFIT_COLLECTION", False)
 DAILY_PROFIT_TARGET_USDT = 1.0
 
 # DCA (Dollar Cost Averaging) settings

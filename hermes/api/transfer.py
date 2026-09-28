@@ -84,16 +84,21 @@ def sweep_profit_to_funding(profit_usdt: float, min_threshold: float = 0.05, pai
 # ---------------------------------------------------------------------------
 # DAILY PROFIT COLLECTION MODEL
 # ---------------------------------------------------------------------------
-# Instead of sweeping every trade's profit (which starves Spot of compounding
-# capital), profits accumulate in Spot. A collector runs periodically in the
-# daemon; once the accumulated realized profit for the day reaches
-# DAILY_PROFIT_TARGET_USDT, exactly that amount is transferred to Funding and
-# the day is marked as "collected". Remaining profit compounds in Spot.
+# Disabled by default (DAILY_PROFIT_COLLECTION=False) pending full net
+# loss/fill/fee accounting ledger implementation (T3/T5). Never claim net
+# accounting is fixed while losses/fees are not fully accounted.
+# When enabled via explicit env opt-in: instead of sweeping every trade's
+# profit (which starves Spot of compounding capital), profits accumulate in
+# Spot. A collector runs periodically in the daemon; once the accumulated
+# realized profit for the day reaches DAILY_PROFIT_TARGET_USDT, exactly that
+# amount is transferred to Funding and the day is marked as "collected".
+# Remaining profit compounds in Spot.
 # ---------------------------------------------------------------------------
 from datetime import datetime, timezone
 import json
 import os
 
+import hermes.config as cfg
 from hermes.config import DAILY_PROFIT_COLLECTION, DAILY_PROFIT_TARGET_USDT
 
 _DAILY_STATE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "daily_profit_state.json")
@@ -140,7 +145,7 @@ def run_daily_profit_collector() -> bool:
 
     Returns True if a collection transfer was executed.
     """
-    if not DAILY_PROFIT_COLLECTION:
+    if not getattr(cfg, "DAILY_PROFIT_COLLECTION", DAILY_PROFIT_COLLECTION):
         return False
 
     state = _load_daily_state()

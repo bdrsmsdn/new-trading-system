@@ -9,6 +9,7 @@ Prevents portfolio paralysis while strictly protecting winners and managing risk
 import time
 from typing import Dict, Any, Optional, Tuple
 
+import hermes.config as cfg
 from hermes.config import (
     ROTATION_ENABLED,
     ROTATION_MIN_HOLD_SECS,
@@ -29,7 +30,7 @@ _last_rotation_time: float = 0.0
 
 def can_rotate_now() -> bool:
     """Check if capital rotation is enabled and not on cooldown."""
-    if not ROTATION_ENABLED:
+    if not getattr(cfg, "ROTATION_ENABLED", ROTATION_ENABLED):
         return False
     global _last_rotation_time
     elapsed = time.time() - _last_rotation_time
