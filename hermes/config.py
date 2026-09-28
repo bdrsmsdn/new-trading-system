@@ -39,13 +39,23 @@ TESTNET = _env.get("TESTNET", "false").lower() == "true"
 
 # Trading Parameters (USDT amounts for Binance)
 MAX_TRADE_USDT = 100
-MIN_TRADE_USDT = 1
-STOP_LOSS_PCT = 0.05            # 5.0% Stop Loss
-TAKE_PROFIT_PCT = 0.10          # 10.0% Take Profit Target
-TRAILING_ACTIVATION_PCT = 0.06  # Trailing Stop starts once +6.0% in profit
-TRAILING_STOP_PCT = 0.025       # 2.5% trailing pullback tolerance
+MIN_TRADE_USDT = 5.50              # Binance strict minNotional is 5.00 USDT — enforce 5.50 to avoid filter rejections
+TARGET_PORTFOLIO_SLOTS = 4         # Divide Spot equity into ~4 balanced position slots
+MIN_MEANINGFUL_TRADE_USDT = 10.0   # Preferred slot trade size when portfolio allows
+STOP_LOSS_PCT = 0.05               # 5.0% Stop Loss
+TAKE_PROFIT_PCT = 0.10             # 10.0% Take Profit Target
+TRAILING_ACTIVATION_PCT = 0.06     # Trailing Stop starts once +6.0% in profit
+TRAILING_STOP_PCT = 0.025          # 2.5% trailing pullback tolerance
 FEE_BUFFER = 0.03
 TRADE_COOLDOWN = 60
+
+# Capital Rotation & Opportunity Cost Parameters
+ROTATION_ENABLED = True
+ROTATION_MIN_HOLD_SECS = 1800      # 30 mins holding time minimum before rotating out
+ROTATION_SCORE_DELTA = 3           # Candidate must score at least 3 points higher than stagnant position
+ROTATION_MAX_PNL_PCT = 0.02        # Only rotate out positions with <= +2.0% profit (never cut winners!)
+ROTATION_MIN_PNL_PCT = -0.045      # Positions with PnL between -4.5% and +2.0% are eligible
+ROTATION_COOLDOWN_SECS = 1800      # Max 1 capital rotation every 30 minutes
 
 # Strategy Thresholds
 FG_BUY_THRESHOLD = 30

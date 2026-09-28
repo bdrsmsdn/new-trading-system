@@ -17,10 +17,11 @@ from hermes.logging_setup import log
 from hermes.state import state
 
 
-def reconcile_positions_from_binance(min_value_usdt: float = 0.80, save_to_state: bool = True) -> Dict[str, Any]:
+def reconcile_positions_from_binance(min_value_usdt: float = 5.0, save_to_state: bool = True) -> Dict[str, Any]:
     """
     Reconciles open positions by fetching all Binance Spot balances and
     cross-referencing with /api/v3/myTrades execution history using FIFO matching.
+    Filters out untradable dust (< $5.00) so they don't clog active position slots.
 
     Returns the updated positions dict.
     """
@@ -86,10 +87,11 @@ def reconcile_positions_from_binance(min_value_usdt: float = 0.80, save_to_state
         tot_q = sum(b_item["remaining"] for b_item in active_buys)
         avg_entry = tot_cost / tot_q if tot_q > 0 else 0.0
         buy_time = active_buys[-1]["time"]
-        val_est = tot_q * avg_entry
+        actual_val_est = total_qty * avg_entry
 
-        # Only track if total position value is above dust threshold
-        if val_est >= min_value_usdt:
+        # Only track if actual wallet balance value is above tradable threshold (>= $5.00)
+        # Prevents leftover dust fractions (< $5.00) from being tracked as active positions
+        if actual_val_est >= min_value_usdt:
             # Preserve peak_price if previously tracked and higher
             existing_pos = state.positions.get(asset, {})
             peak_price = max(existing_pos.get("peak_price", avg_entry), avg_entry)
@@ -102,6 +104,8 @@ def reconcile_positions_from_binance(min_value_usdt: float = 0.80, save_to_state
                 "take_profit": avg_entry * (1 + TAKE_PROFIT_PCT),
                 "peak_price": peak_price
             }
+        else:
+            log.info(f"[RECONCILE] Skipping dust {asset}: {total_qty:.8f} (~${actual_val_est:.2f} < ${min_value_usdt:.2f})")
 
     if save_to_state:
         # Check diff

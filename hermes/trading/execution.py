@@ -83,7 +83,7 @@ def format_coin(amount: float, symbol: str) -> str:
     """Format coin amount for display."""
     return f"{format_qty(amount)} {symbol}"
 
-def execute_buy(pair: str, price: float, usdt_balance: float, dry_run: bool = False) -> tuple[bool, str]:
+def execute_buy(pair: str, price: float, usdt_balance: float, dry_run: bool = False, confidence: str = "Medium", score: int = 5) -> tuple[bool, str]:
     """Execute a buy order on Binance with dynamic position sizing.
 
     Returns (success, error_message).
@@ -98,7 +98,7 @@ def execute_buy(pair: str, price: float, usdt_balance: float, dry_run: bool = Fa
         if deviation > 0.02:
             log.warning(f"[PRICE] {pair} deviation {deviation*100:.1f}% from last price {format_price(last_price)}")
 
-    buy_amount_usdt = get_dynamic_position_size(pair, price, usdt_balance)
+    buy_amount_usdt = get_dynamic_position_size(pair, price, usdt_balance, confidence=confidence, score=score)
     if buy_amount_usdt <= 0:
         msg = f"Skipping {pair}: insufficient balance (${usdt_balance:.2f}) for minimum trade (${MIN_TRADE_USDT:.2f})"
         log.info(msg)
@@ -108,7 +108,7 @@ def execute_buy(pair: str, price: float, usdt_balance: float, dry_run: bool = Fa
     log.info(f"BUY order (dynamic, vol_factor={vol_factor:.2f}): ${buy_amount_usdt:.2f} @ {format_price(price)}")
 
     if dry_run:
-        buy_amount_usdt = get_dynamic_position_size(pair, price, usdt_balance)
+        buy_amount_usdt = get_dynamic_position_size(pair, price, usdt_balance, confidence=confidence, score=score)
         log.info(f"[DRY_RUN] BUY: {pair} @ {format_price(price)}, qty_usdt=${buy_amount_usdt:.2f}, expected_coins={buy_amount_usdt/price:.2f}")
         _simulate_buy(pair, price, buy_amount_usdt)
         return True, ""

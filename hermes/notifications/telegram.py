@@ -338,3 +338,42 @@ def telegram_regime_alert(new_regime: str, fg_val: int, max_pairs: int, position
         f"Position Size: {position_mult:.1f}x"
     )
     telegram_send(msg)
+
+
+def telegram_rotation_alert(
+    liquidated_pair: str,
+    liquidated_pnl: float,
+    liquidated_score: int,
+    freed_usdt: float,
+    new_pair: str,
+    new_price: float,
+    new_score: int,
+    new_confidence: str,
+    new_signal_type: str = "LONG"
+) -> None:
+    """Send alert when active capital rotation is executed."""
+    if not _telegram_enabled:
+        return
+
+    clean_old = liquidated_pair.upper().replace("USDT", "")
+    clean_new = new_pair.upper().replace("USDT", "")
+
+    pnl_sign = "+" if liquidated_pnl >= 0 else ""
+    pnl_emoji = "🟢" if liquidated_pnl >= 0 else "🔴"
+
+    lines = [
+        "🔄 *HERMES ACTIVE CAPITAL ROTATION (Opportunity Cost)*",
+        "────────────────────",
+        f"✂️ *PANGKAS POSISI LELET: {clean_old}*",
+        f"📉 PnL Saat Cut: {pnl_emoji} {pnl_sign}{liquidated_pnl * 100:.2f}%",
+        f"📊 Skor Momentum Lama: {liquidated_score}/10 (Stagnan)",
+        f"💵 Modal Dilepas: ${freed_usdt:.2f} USDT",
+        "────────────────────",
+        f"🚀 *ROTASI KE MOMENTUM SUPERIOR: {clean_new}*",
+        f"📈 Sinyal: *{new_signal_type}* ({new_confidence}) | Skor: *{new_score}/10*",
+        f"💵 Entry Baru: ${new_price:.4f}",
+        f"🎯 Target Breakout: +10.0%",
+        "────────────────────",
+        "💡 *Rasional AI:* Modal dipindahkan dari aset tidur/lelet demi menangkap early breakout dengan potensi gain dan velocity cuan yang jauh lebih tinggi! 🚀"
+    ]
+    telegram_send("\n".join(lines))
