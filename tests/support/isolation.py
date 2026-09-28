@@ -553,12 +553,14 @@ class EnvironmentIsolation:
             self._orig_paths["config.AGENT_MEMORY_FILE"] = getattr(cfg, "AGENT_MEMORY_FILE", None)
             self._orig_paths["config.PID_FILE"] = getattr(cfg, "PID_FILE", None)
             self._orig_paths["config.LEDGER_PATH"] = getattr(cfg, "LEDGER_PATH", None)
+            self._orig_paths["config.ACCOUNTING_DB_PATH"] = getattr(cfg, "ACCOUNTING_DB_PATH", None)
 
             setattr(cfg, "STATE_FILE", isolated_state)
             setattr(cfg, "PRICE_CACHE", isolated_price_cache)
             setattr(cfg, "AGENT_MEMORY_FILE", isolated_agent_mem)
             setattr(cfg, "PID_FILE", isolated_pid)
             setattr(cfg, "LEDGER_PATH", isolated_ledger)
+            setattr(cfg, "ACCOUNTING_DB_PATH", isolated_ledger)
 
         # hermes.state
         if "hermes.state" in sys.modules:
@@ -588,7 +590,7 @@ class EnvironmentIsolation:
         # Restore module paths
         if "hermes.config" in sys.modules:
             cfg = sys.modules["hermes.config"]
-            for k in ("STATE_FILE", "PRICE_CACHE", "AGENT_MEMORY_FILE", "PID_FILE", "LEDGER_PATH"):
+            for k in ("STATE_FILE", "PRICE_CACHE", "AGENT_MEMORY_FILE", "PID_FILE", "LEDGER_PATH", "ACCOUNTING_DB_PATH"):
                 orig = self._orig_paths.get(f"config.{k}")
                 if orig is not None:
                     setattr(cfg, k, orig)

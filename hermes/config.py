@@ -8,6 +8,8 @@ STATE_FILE = SCRIPT_DIR / "hermes_trader_state.json"
 PRICE_CACHE = SCRIPT_DIR / "hermes_prices.json"
 ENV_FILE = SCRIPT_DIR / ".env"
 PID_FILE = SCRIPT_DIR / "daemon.pid"
+ACCOUNTING_DB_PATH = Path(os.environ.get("ACCOUNTING_DB_PATH", str(SCRIPT_DIR / "hermes_ledger.db")))
+LEDGER_PATH = ACCOUNTING_DB_PATH
 
 def load_env() -> dict:
     """Load environment variables from .env file."""
