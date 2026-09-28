@@ -416,6 +416,37 @@ class SqliteAccountingRepository:
             gm = time.gmtime(event_sec)
             reporting_day_utc = time.strftime("%Y-%m-%d", gm)
 
+            # Insert realized outcome first to satisfy foreign key constraint on lot_allocations
+            con.execute(
+                """
+                INSERT INTO realized_outcomes (
+                    schema_version, outcome_id, account_id, venue, symbol,
+                    sell_trade_id, sold_base_qty, gross_proceeds_usdt,
+                    fifo_cost_usdt, buy_fee_usdt, sell_fee_usdt, net_pnl_usdt,
+                    completeness, reporting_day_utc, incomplete_reason_codes_json,
+                    created_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    sell_row["schema_version"],
+                    outcome_id,
+                    sell_row["account_id"],
+                    sell_row["venue"],
+                    sell_row["symbol"],
+                    sell_row["trade_id"],
+                    canonical_decimal(str(sold_qty)),
+                    canonical_decimal(str(gross_proceeds)),
+                    canonical_decimal(str(total_fifo_cost)),
+                    buy_fee_str,
+                    sell_fee_str,
+                    net_pnl_str,
+                    completeness.value,
+                    reporting_day_utc,
+                    json.dumps(reasons),
+                    now_ms,
+                ),
+            )
+
             # Insert allocations
             for alloc in allocations_to_save:
                 con.execute(
@@ -447,37 +478,6 @@ class SqliteAccountingRepository:
                         now_ms,
                     ),
                 )
-
-            # Insert realized outcome
-            con.execute(
-                """
-                INSERT INTO realized_outcomes (
-                    schema_version, outcome_id, account_id, venue, symbol,
-                    sell_trade_id, sold_base_qty, gross_proceeds_usdt,
-                    fifo_cost_usdt, buy_fee_usdt, sell_fee_usdt, net_pnl_usdt,
-                    completeness, reporting_day_utc, incomplete_reason_codes_json,
-                    created_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """,
-                (
-                    sell_row["schema_version"],
-                    outcome_id,
-                    sell_row["account_id"],
-                    sell_row["venue"],
-                    sell_row["symbol"],
-                    sell_row["trade_id"],
-                    canonical_decimal(str(sold_qty)),
-                    canonical_decimal(str(gross_proceeds)),
-                    canonical_decimal(str(total_fifo_cost)),
-                    buy_fee_str,
-                    sell_fee_str,
-                    net_pnl_str,
-                    completeness.value,
-                    reporting_day_utc,
-                    json.dumps(reasons),
-                    now_ms,
-                ),
-            )
 
             con.execute("COMMIT;")
 
@@ -524,6 +524,43 @@ class SqliteAccountingRepository:
                 incomplete_reason_codes=tuple(reasons),
                 allocations=tuple(built_allocations),
             )
+        except Exception:
+            try:
+                con.execute("ROLLBACK;")
+            except sqlite3.OperationalError:
+                pass
+            raise
+        finally:
+            con.close()
+
+    def create_cutover(self, cutover: AccountingCutover) -> None:
+        """Persist an accounting cutover record."""
+        con = self._con()
+        try:
+            con.execute("BEGIN IMMEDIATE;")
+            now_ms = int(time.time() * 1000)
+            con.execute(
+                """
+                INSERT INTO accounting_cutovers (
+                    cutover_id, account_id, venue, cutover_at_ms,
+                    baseline_reference, backfill_from_ms, backfill_through_ms,
+                    status, approved_at_ms, created_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    cutover.cutover_id,
+                    cutover.account_id,
+                    cutover.venue.value,
+                    cutover.cutover_at_ms,
+                    cutover.baseline_reference,
+                    cutover.backfill_from_ms,
+                    cutover.backfill_through_ms,
+                    cutover.status.value,
+                    cutover.approved_at_ms,
+                    now_ms,
+                ),
+            )
+            con.execute("COMMIT;")
         except Exception:
             try:
                 con.execute("ROLLBACK;")
@@ -996,6 +1033,47 @@ class SqliteRotationRepository:
                 )
 
             now_ms = int(time.time() * 1000)
+
+            # Ensure decision row exists in rotation_decisions
+            cur = con.execute("SELECT decision_id FROM rotation_decisions WHERE decision_id = ?;", (decision.decision_id,))
+            if not cur.fetchone():
+                con.execute(
+                    """
+                    INSERT INTO rotation_decisions (
+                        schema_version, decision_id, account_id, held_symbol,
+                        candidate_symbol, position_lifecycle_id, position_version,
+                        model_version, held_snapshot_id, candidate_snapshot_id,
+                        held_score, candidate_score, score_edge,
+                        estimated_roundtrip_cost_usdt, estimated_cost_fraction,
+                        expected_net_benefit_usdt, risk_decision_id, action,
+                        reason_codes_json, decided_at_ms, created_at_ms
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (
+                        decision.schema_version,
+                        decision.decision_id,
+                        decision.account_id,
+                        decision.held_symbol,
+                        decision.candidate_symbol,
+                        decision.position_lifecycle_id,
+                        decision.position_version,
+                        decision.model_version,
+                        decision.held_snapshot_id,
+                        decision.candidate_snapshot_id,
+                        decision.held_score,
+                        decision.candidate_score,
+                        decision.score_edge,
+                        decision.estimated_roundtrip_cost_usdt,
+                        decision.estimated_cost_fraction,
+                        decision.expected_net_benefit_usdt,
+                        decision.risk_decision_id,
+                        decision.action.value,
+                        json.dumps(decision.reason_codes),
+                        decision.decided_at_ms,
+                        now_ms,
+                    ),
+                )
+
             intent_id = _generate_id("rot_int")
             budget = decision.expected_net_benefit_usdt or "0"
             canonical_decimal(budget, non_negative=True)

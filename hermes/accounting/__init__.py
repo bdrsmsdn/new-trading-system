@@ -1,4 +1,4 @@
-"""Durable fill-ledger domain contracts, schema, and repositories for Phase 2 accounting."""
+"""Durable fill-ledger domain contracts, schema, repositories, and domain services for Phase 2 accounting."""
 
 from hermes.accounting.contracts import (
     AccountingCutover,
@@ -6,6 +6,7 @@ from hermes.accounting.contracts import (
     AccountingSnapshot,
     Completeness,
     CutoverStatus,
+    DecimalString,
     DistributionAction,
     DistributionDecision,
     DistributionPolicyConfig,
@@ -14,6 +15,7 @@ from hermes.accounting.contracts import (
     Lot,
     LotAllocation,
     RealizedOutcome,
+    ReasonCodes,
     ReconciliationStatus,
     RotationAction,
     RotationDecision,
@@ -31,6 +33,7 @@ from hermes.accounting.contracts import (
     TransferStatus,
     TransferSubmission,
     TransferSubmissionStatus,
+    UtcDay,
     ValuationStatus,
     Venue,
     canonical_decimal,
@@ -55,6 +58,24 @@ from hermes.accounting.schema import (
     run_migrations,
     verify_schema_integrity,
 )
+from hermes.accounting.ingestion import (
+    ingest_binance_trades,
+    parse_binance_fill,
+    reconcile_and_allocate_fills,
+)
+from hermes.accounting.collector import (
+    BinanceTransferGateway,
+    SpotToFundingCollector,
+    evaluate_distribution,
+)
+from hermes.accounting.rotation import (
+    BinanceSpotOrderGateway,
+    RotationExecutor,
+    RotationPolicyConfig,
+    ShadowRotationRecorder,
+    evaluate_rotation,
+    rank_rotation_candidates,
+)
 
 __all__ = [
     "AccountingCutover",
@@ -62,6 +83,7 @@ __all__ = [
     "AccountingSnapshot",
     "Completeness",
     "CutoverStatus",
+    "DecimalString",
     "DistributionAction",
     "DistributionDecision",
     "DistributionPolicyConfig",
@@ -70,6 +92,7 @@ __all__ = [
     "Lot",
     "LotAllocation",
     "RealizedOutcome",
+    "ReasonCodes",
     "ReconciliationStatus",
     "RotationAction",
     "RotationDecision",
@@ -87,6 +110,7 @@ __all__ = [
     "TransferStatus",
     "TransferSubmission",
     "TransferSubmissionStatus",
+    "UtcDay",
     "ValuationStatus",
     "Venue",
     "canonical_decimal",
@@ -106,4 +130,16 @@ __all__ = [
     "rollback_migrations",
     "run_migrations",
     "verify_schema_integrity",
+    "ingest_binance_trades",
+    "parse_binance_fill",
+    "reconcile_and_allocate_fills",
+    "BinanceTransferGateway",
+    "SpotToFundingCollector",
+    "evaluate_distribution",
+    "BinanceSpotOrderGateway",
+    "RotationExecutor",
+    "RotationPolicyConfig",
+    "ShadowRotationRecorder",
+    "evaluate_rotation",
+    "rank_rotation_candidates",
 ]

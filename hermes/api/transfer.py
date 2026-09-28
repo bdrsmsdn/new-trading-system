@@ -125,14 +125,21 @@ def _save_daily_state(state: dict) -> None:
         log.error(f"[DAILY-PROFIT] Failed to save state: {e}")
 
 
+# ---------------------------------------------------------------------------
+# ARCHIVAL / LEGACY DAILY PROFIT TRACKING
+#
+# NOTE: daily_profit_state.json is an unverified legacy tracker and is archival.
+# It is NON-AUTHORITATIVE from Phase 2 cutover onward. Authoritative profit
+# accounting, fee valuation, and loss-carry are owned by hermes.accounting.
+# ---------------------------------------------------------------------------
+
+
 def track_realized_profit(pair: str, pnl_usdt: float) -> None:
-    """Accumulate realized profit into today's ledger (no transfer)."""
-    if pnl_usdt <= 0:
-        return
+    """Accumulate realized profit/loss into today's archival ledger (no transfer)."""
     state = _load_daily_state()
     today = _today_key()
     day = state.setdefault(today, {"collected_profit": 0.0, "target_met": False})
-    if day.get("target_met"):
+    if day.get("target_met") and pnl_usdt > 0:
         return  # daily target already collected; let extra profit compound
     day["collected_profit"] = round(day.get("collected_profit", 0.0) + pnl_usdt, 6)
     _save_daily_state(state)

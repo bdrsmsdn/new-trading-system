@@ -52,7 +52,6 @@ class TestDailyProfitCollection(IsolatedTestCase):
         self.assertAlmostEqual(state[today]["collected_profit"], 0.75)
         self.assertFalse(state[today]["target_met"])
 
-    @unittest.skip("Losses must be tracked in net accounting ledger (pending T3/T5 remediation; legacy bug ignored losses)")
     def test_track_includes_losses_net_accounting_contract(self):
         """Contract: Net accounting must record losses rather than ignoring them."""
         track_realized_profit("BTC", -0.50)
