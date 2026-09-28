@@ -10,6 +10,7 @@ from decimal import Decimal
 import hashlib
 import json
 import logging
+import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 log = logging.getLogger(__name__)
@@ -209,19 +210,31 @@ def fetch_paginated_binance_trades(
     symbol: str,
     limit: int = 1000,
     start_from_id: Optional[int] = None,
+    max_pages: int = 100,
 ) -> List[Dict[str, Any]]:
-    """Fetch all paginated trades for a symbol from Binance /api/v3/myTrades."""
+    """Fetch all paginated trades for a symbol from Binance /api/v3/myTrades.
+
+    Guards against loop denial-of-service via max_pages bound, strictly advancing fromId,
+    and sanitized symbol.
+    """
     from hermes.api.auth import binance_signed_request
     all_trades: List[Dict[str, Any]] = []
     from_id = start_from_id
-    sym = symbol.upper()
+    clean_sym = re.sub(r"[^A-Za-z0-9]", "", str(symbol)).upper()
+    if not clean_sym:
+        return []
+    sym = clean_sym
     if not any(sym.endswith(base) for base in ("USDT", "BTC", "BNB", "BUSD", "FDUSD", "USDC")):
         sym = f"{sym}USDT"
 
-    while True:
-        params: Dict[str, Any] = {"symbol": sym, "limit": limit}
+    clamped_limit = min(max(1, int(limit)), 1000)
+    page_count = 0
+
+    while page_count < max_pages:
+        page_count += 1
+        params: Dict[str, Any] = {"symbol": sym, "limit": clamped_limit}
         if from_id is not None:
-            params["fromId"] = from_id
+            params["fromId"] = max(0, int(from_id))
         try:
             trades = binance_signed_request("/api/v3/myTrades", params=params, method="GET")
         except Exception:
@@ -231,11 +244,14 @@ def fetch_paginated_binance_trades(
             break
 
         all_trades.extend(trades)
-        if len(trades) < limit:
+        if len(trades) < clamped_limit:
             break
 
         max_id = max(int(t.get("id", 0)) for t in trades)
-        from_id = max_id + 1
+        next_from_id = max_id + 1
+        if from_id is not None and next_from_id <= from_id:
+            break
+        from_id = next_from_id
 
     return all_trades
 

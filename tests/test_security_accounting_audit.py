@@ -49,6 +49,7 @@ from hermes.accounting.contracts import (
 )
 from hermes.accounting.ingestion import (
     _hash_trade_payload,
+    fetch_paginated_binance_trades,
     ingest_binance_trades,
     parse_binance_fill,
 )
@@ -534,6 +535,141 @@ class TestSecurityFuturesAndEndpointIsolation(IsolatedTestCase):
         self.assertEqual(intent.status, RotationStatus.CASH_RECOVERY)
         mock_gateway.submit_sell.assert_called_once()
         mock_gateway.submit_buy.assert_called_once()
+
+
+class TestSecurityPaginationAndRuntimeBarriers(IsolatedTestCase):
+    """Test Suite 5: Pagination bounds, symbol sanitization, and runtime execution barriers."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp_dir.name) / "test_sec_barriers.db"
+        init_db(self.db_path)
+        self.accounting_repo = SqliteAccountingRepository(self.db_path)
+        self.rot_repo = SqliteRotationRepository(self.db_path)
+
+    def tearDown(self) -> None:
+        self.tmp_dir.cleanup()
+        super().tearDown()
+
+    def test_fetch_paginated_binance_trades_read_only_get_enforced(self) -> None:
+        """fetch_paginated_binance_trades strictly calls read-only GET /api/v3/myTrades."""
+        with patch("hermes.api.auth.binance_signed_request") as mock_req:
+            mock_req.return_value = []
+            trades = fetch_paginated_binance_trades("BTCUSDT", limit=500)
+            self.assertEqual(trades, [])
+            mock_req.assert_called_once()
+            endpoint, kwargs = mock_req.call_args[0][0], mock_req.call_args[1]
+            self.assertEqual(endpoint, "/api/v3/myTrades")
+            self.assertEqual(kwargs["method"], "GET")
+            self.assertEqual(kwargs.get("params", {}).get("symbol"), "BTCUSDT")
+            self.assertEqual(kwargs.get("params", {}).get("limit"), 500)
+
+    def test_fetch_paginated_binance_trades_loop_dos_bounded(self) -> None:
+        """Pagination terminates safely at max_pages bound under endless 1000-item responses."""
+        # Mock returning 1000 items on every call with advancing IDs
+        def fake_binance_call(endpoint, params=None, method="GET"):
+            from_id = params.get("fromId", 0)
+            return [{"id": from_id + i, "symbol": "BTCUSDT"} for i in range(1000)]
+
+        with patch("hermes.api.auth.binance_signed_request", side_effect=fake_binance_call) as mock_req:
+            trades = fetch_paginated_binance_trades("BTCUSDT", limit=1000, max_pages=3)
+            self.assertEqual(len(trades), 3000)
+            self.assertEqual(mock_req.call_count, 3)
+
+    def test_fetch_paginated_binance_trades_non_advancing_id_break(self) -> None:
+        """Pagination breaks immediately if returned IDs do not advance to prevent infinite loop."""
+        # Returning items with repeating/non-advancing IDs
+        fake_trades = [{"id": 100, "symbol": "BTCUSDT"} for _ in range(1000)]
+        with patch("hermes.api.auth.binance_signed_request", return_value=fake_trades) as mock_req:
+            trades = fetch_paginated_binance_trades("BTCUSDT", limit=1000, start_from_id=101)
+            self.assertEqual(len(trades), 1000)
+            # Should break after 1 call because next_from_id (101) <= from_id (101)
+            self.assertEqual(mock_req.call_count, 1)
+
+    def test_fetch_paginated_binance_trades_symbol_sanitization(self) -> None:
+        """fetch_paginated_binance_trades strips dangerous injection characters."""
+        with patch("hermes.api.auth.binance_signed_request") as mock_req:
+            mock_req.return_value = []
+            fetch_paginated_binance_trades("SOL/USDT; DROP TABLE fills;--")
+            mock_req.assert_called_once()
+            endpoint, kwargs = mock_req.call_args[0][0], mock_req.call_args[1]
+            self.assertEqual(kwargs.get("params", {}).get("symbol"), "SOLUSDTDROPTABLEFILLSUSDT")
+
+    def test_shadow_rotation_recorder_zero_order_mutation_guarantee(self) -> None:
+        """ShadowRotationRecorder evaluates policy and records decisions with zero external mutations."""
+        recorder = ShadowRotationRecorder(
+            rotation_repo=self.rot_repo,
+            config=RotationPolicyConfig(enabled=False, shadow_mode=True),
+        )
+        now_ms = 1700000000000
+        h_snap = RotationMarketSnapshot(
+            snapshot_id="snap_h1",
+            account_id="default",
+            venue=Venue.SPOT,
+            symbol="ETHUSDT",
+            position_lifecycle_id="pos_eth",
+            position_version=1,
+            model_version="v2",
+            feature_schema_version="v1",
+            observed_at_ms=now_ms,
+            expires_at_ms=now_ms + 60000,
+            score="5",
+            best_bid_usdt="2000",
+            best_ask_usdt="2000",
+            spread_fraction="0.001",
+            available_depth_usdt="5000",
+            closed_bar_ids=("b1",),
+            completeness=Completeness.VERIFIED,
+        )
+        c_snap = RotationMarketSnapshot(
+            snapshot_id="snap_c1",
+            account_id="default",
+            venue=Venue.SPOT,
+            symbol="SOLUSDT",
+            position_lifecycle_id=None,
+            position_version=None,
+            model_version="v2",
+            feature_schema_version="v1",
+            observed_at_ms=now_ms,
+            expires_at_ms=now_ms + 60000,
+            score="9",
+            best_bid_usdt="100",
+            best_ask_usdt="100",
+            spread_fraction="0.001",
+            available_depth_usdt="5000",
+            closed_bar_ids=("b2",),
+            completeness=Completeness.VERIFIED,
+        )
+
+        with patch("hermes.api.auth.binance_signed_request") as mock_req:
+            decision = recorder.record_evaluation(
+                held_snapshot=h_snap,
+                candidate_snapshot=c_snap,
+                held_position_pnl_pct="0.01",
+                held_holding_time_secs=3600,
+                now_ms=now_ms,
+            )
+            self.assertIsNotNone(decision)
+            self.assertEqual(decision.action, RotationAction.APPROVE)
+            mock_req.assert_not_called()
+
+        # Verify decision is persisted in SQLite audit table with zero active orders
+        con = get_db_connection(self.db_path)
+        cur = con.execute("SELECT COUNT(*) as count FROM rotation_decisions;")
+        self.assertEqual(cur.fetchone()["count"], 1)
+        con.close()
+
+    def test_sqlite_db_permissions_and_path_resolution(self) -> None:
+        """SQLite database connection resolves path safely and sets 0600 mode."""
+        sub_path = Path(self.tmp_dir.name) / "nested" / "deep" / "accounting.db"
+        con = get_db_connection(sub_path, create_dirs=True)
+        con.execute("CREATE TABLE test_table (val TEXT);")
+        con.close()
+
+        self.assertTrue(sub_path.exists())
+        file_mode = sub_path.stat().st_mode & 0o777
+        self.assertEqual(file_mode, 0o600)
 
 
 if __name__ == "__main__":

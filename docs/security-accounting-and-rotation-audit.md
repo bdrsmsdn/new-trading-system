@@ -2,21 +2,22 @@
 
 **Auditor:** Application Security Engineer & AppSec Auditor (`sec`)  
 **Date:** 2026-09-28  
-**Scope:** Phase 2 FIFO Accounting Engine, Spot-to-Funding Daily Profit Sweep Collector, Cost-Aware Capital Rotation State Machine, SQLite Persistence Layer, API Permission Boundaries, and Secret Leakage Prevention.  
-**Branch:** `wt/t_50b322d0` (baseline: `cf1ae2c7cccb69e2429d22fbe83d5e2b4c85241e`, parent: `979357feae299d70dc88fb90b8ec455a2c7c9f3c`)  
+**Scope:** Phase 2 FIFO Accounting Engine, Daemon Runtime Composition, Paginated myTrades Ingestion, Spot-to-Funding Daily Profit Sweep Collector, Shadow Cost-Aware Capital Rotation State Machine, SQLite Persistence Layer, API Permission Boundaries, Loop DoS Prevention, and Secret Leakage Prevention.  
+**Branch:** `wt/t_fdf2a4ab` (parent: `5f4f5ab`, baseline: `f713716`)  
 **Security Verdict:** **PASS (CLEAN)**  
 
 ---
 
 ## 1. Executive Summary
 
-A comprehensive application security audit and vulnerability assessment was conducted across all newly developed Phase 2 domain components in the Hermes Trading System. The audit specifically focused on preventing financial exploits, secret leakage, authorization bypasses, race conditions, replay attacks, and unauthorized exchange privileges.
+A comprehensive application security audit and vulnerability assessment was conducted across all newly developed Phase 2 domain components and daemon runtime wiring in the Hermes Trading System. The audit specifically focused on preventing financial exploits, secret leakage, authorization bypasses, race conditions, replay attacks, pagination loop DoS, and unauthorized exchange privileges.
 
 ### Core Audit Outcomes:
 1. **Transfer Authorization & Surplus Guardrails:** Spot-to-Funding profit transfer logic cannot be manipulated, triggered without human cutover approval, or executed beyond verified cumulative net surplus thresholds.
 2. **Zero Secret Leaks & Hardened Persistence:** API keys, HMAC secrets, and bearer tokens are never logged, serialized into SQLite, or leaked during test execution. SQLite database files and WAL companions are strictly enforced with `0600` POSIX file permissions.
 3. **Idempotency & Replay Defense:** All fill ingestion, transfer claiming, and rotation execution paths enforce deterministic hashing, collision detection with automated quarantine, and compare-and-set (CAS) state machine transitions. Network timeouts and daemon restarts recover cleanly via read-only reconciliation without duplicate transactions.
 4. **Strict Isolation & Zero Futures Fallback:** Futures API endpoints and unauthorized transfer types remain completely blocked. Capital rotation failures enter `CASH_RECOVERY` retaining USDT in Spot with zero fallback to Futures.
+5. **Daemon Wiring & Pagination Bounds:** Binance historical trade synchronization uses read-only GET `/api/v3/myTrades`, bounded with `max_pages=100`, strictly advancing IDs, and input sanitization to eliminate pagination denial-of-service risks. Shadow rotation executes zero order mutations.
 
 ---
 
@@ -26,11 +27,12 @@ A comprehensive application security audit and vulnerability assessment was cond
 | :--- | :--- | :--- |
 | `hermes/accounting/collector.py` | Spot-to-Funding Daily Profit Collector | Pure 7-gate distribution policy, read-only reconciliation, `MAIN_FUNDING` transfer gateway. |
 | `hermes/accounting/contracts.py` | Phase 2 Domain Types & Protocols | Immutable frozen dataclasses, strict `canonical_decimal` boundary validation, state enums. |
-| `hermes/accounting/ingestion.py` | Fill Ingestion & Fee Valuation | Secret redaction in `_hash_trade_payload`, deterministic fee valuation, duplicate detection. |
+| `hermes/accounting/ingestion.py` | Fill Ingestion & Fee Valuation | Secret redaction in `_hash_trade_payload`, deterministic fee valuation, pagination bounds, symbol sanitization. |
 | `hermes/accounting/repository.py` | Durable SQLite Ledger & Repositories | FIFO allocation, atomic CAS transitions, conflicting fill quarantine, reconciliation blockers. |
-| `hermes/accounting/rotation.py` | Cost-Aware Capital Rotation | Score-cost separation, symmetric snapshot validation, `CASH_RECOVERY` fallback, Spot-only order gateway. |
+| `hermes/accounting/rotation.py` | Cost-Aware Capital Rotation | Score-cost separation, symmetric snapshot validation, `ShadowRotationRecorder` zero-mutation guarantee, Spot-only gateway. |
 | `hermes/accounting/schema.py` | SQLite Migrations & Durability | WAL mode, foreign key enforcement, SHA256 migration checksums, atomic backups, `0600` permissions. |
-| `hermes/api/transfer.py` | Transfer API Adapters | Explicit amount bounding, safe logging, legacy state archival. |
+| `hermes/daemon/tasks.py` | Daemon Runtime Composition | Read-only periodic sync, shadow rotation invocation, fail-safe genesis cutover initialization (`PENDING`). |
+| `hermes/api/transfer.py` | Transfer API Adapters | Explicit amount bounding, safe logging, disarmed legacy JSON state file authorization. |
 | `hermes/config.py` | System Configuration & Risk Gates | Fail-safe boolean environment parsing (`parse_bool_env`), default-disabled flags. |
 | `tests/support/isolation.py` | Test Isolation Sentinels | Global blocking of unmocked network sockets, requests, urllib, and subprocess curl. |
 
@@ -80,6 +82,15 @@ A comprehensive application security audit and vulnerability assessment was cond
   * **Restricted Transfer Types (`BinanceTransferGateway` in `collector.py`):** Strictly hardcodes `type: "MAIN_FUNDING"` (Spot to Funding). External withdrawals or futures transfers (`MAIN_UMFUTURE`, `MAIN_CMFUTURE`) cannot be executed.
   * **CASH_RECOVERY Safety Net:** During capital rotation, if the replacement buy fails, is rejected by Binance (e.g. `-2010:INSUFFICIENT_FUNDS`), or fails preflight validation, the rotation state machine transitions to `CASH_RECOVERY`. The liquidated capital is safely retained as Spot USDT with zero Futures fallback.
 
+### 3.5 Checkpoint 5: Daemon Runtime Wiring, Pagination Bounds & Zero-Mutation Barriers
+
+* **Threat Model:** Loop denial-of-service via non-terminating trade pagination, malformed symbol/parameter injection, accidental execution of live orders during shadow rotation, or unapproved transfer authorization during periodic sync.
+* **Audit Findings:**
+  * **Read-Only Trade Pagination (`fetch_paginated_binance_trades` in `ingestion.py`):** Strictly issues `GET /api/v3/myTrades` using read-only historical trade pagination. Request query parameters clamp `limit` between 1 and 1000, enforce an upper bound of `max_pages=100`, strictly verify that `next_from_id > from_id` to prevent infinite loops on repeating payloads, and sanitize symbol strings with regex filtering (`[^A-Za-z0-9]`).
+  * **Zero-Side-Effect Shadow Rotation (`ShadowRotationRecorder` in `rotation.py` & `tasks.py`):** When Spot USDT balance is insufficient, `daemon_trade_check_v2` evaluates rotation exclusively via `ShadowRotationRecorder`. The shadow recorder evaluates market snapshots and logs immutable comparative audit rows to `rotation_decisions` in SQLite with zero order submissions, zero network mutations, and zero portfolio modifications.
+  * **Genesis Cutover Isolation (`validate_positions_on_startup` in `tasks.py`):** On daemon startup, new accounting cutovers are initialized in `CutoverStatus.PENDING`. The transfer policy cannot self-approve on feature toggle; transfers remain blocked fail-closed until an explicit operator approval transition occurs.
+  * **Disarmed Legacy State (`run_daily_profit_collector` in `transfer.py`):** Legacy `daily_profit_state.json` file reads are entirely decoupled from transfer authorization; all transfer decisions require verified SQLite ledger surplus and approved cutover state.
+
 ---
 
 ## 4. Automated Security Verification Matrix
@@ -101,13 +112,19 @@ A comprehensive application security audit and vulnerability assessment was cond
 | `test_security_accounting_audit.py` | `test_spot_order_gateway_has_zero_futures_endpoints` | Absence of Futures endpoints in Spot order gateway | **PASS** |
 | `test_security_accounting_audit.py` | `test_transfer_gateway_strictly_limited_to_main_funding` | Gateway strictly enforces `MAIN_FUNDING` universal transfer | **PASS** |
 | `test_security_accounting_audit.py` | `test_rotation_cash_recovery_retains_usdt_with_zero_futures_fallback` | Buy rejection enters `CASH_RECOVERY` retaining Spot USDT | **PASS** |
+| `test_security_accounting_audit.py` | `test_fetch_paginated_binance_trades_read_only_get_enforced` | Read-only GET `/api/v3/myTrades` endpoint and parameter restriction | **PASS** |
+| `test_security_accounting_audit.py` | `test_fetch_paginated_binance_trades_loop_dos_bounded` | Pagination bounds terminate safely at `max_pages` ceiling | **PASS** |
+| `test_security_accounting_audit.py` | `test_fetch_paginated_binance_trades_non_advancing_id_break` | Non-advancing trade ID terminates loop immediately | **PASS** |
+| `test_security_accounting_audit.py` | `test_fetch_paginated_binance_trades_symbol_sanitization` | Symbol sanitization strips injection characters | **PASS** |
+| `test_security_accounting_audit.py` | `test_shadow_rotation_recorder_zero_order_mutation_guarantee` | Shadow rotation recorder makes zero external order mutations | **PASS** |
+| `test_security_accounting_audit.py` | `test_sqlite_db_permissions_and_path_resolution` | Path resolution handles nested paths with `0600` permissions | **PASS** |
 
-**Test Execution Summary:** 168 passing tests (0 failures, 0 errors, 0 skips).
+**Test Execution Summary:** 186 passing tests (0 failures, 0 errors, 0 skips).
 
 ---
 
 ## 5. Conclusion & Transition Sign-Off
 
-The Phase 2 FIFO accounting, profit sweep collector, and cost-aware rotation implementations adhere strictly to the principle of least privilege, zero-trust input validation, defense-in-depth, and fail-closed execution. No secret leaks, unauthorized endpoints, or transfer race conditions exist.
+The Phase 2 FIFO accounting, daemon runtime wiring, pagination sync, profit sweep collector, and shadow cost-aware rotation implementations adhere strictly to the principle of least privilege, zero-trust input validation, defense-in-depth, and fail-closed execution. No secret leaks, unauthorized endpoints, loop denial-of-service vulnerabilities, or transfer race conditions exist.
 
 **Final Security Assessment:** **APPROVED FOR CODE REVIEW AND CUTOVER READINESS (STAGE 2 SIGN-OFF).**
