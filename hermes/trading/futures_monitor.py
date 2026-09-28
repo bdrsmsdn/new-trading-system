@@ -110,7 +110,8 @@ def check_open_futures_positions() -> None:
                         entry_price=entry_price,
                         pnl_pct=roe_pct,
                         is_futures=True,
-                        leverage=leverage
+                        leverage=leverage,
+                        side=side
                     )
 
                     if evaluation.get("action") == "EXTEND_AND_RIDE":
@@ -136,7 +137,8 @@ def check_open_futures_positions() -> None:
                                 reason=evaluation.get("reason", ""),
                                 sentiment_str=evaluation.get("sentiment_summary", ""),
                                 is_futures=True,
-                                leverage=leverage
+                                leverage=leverage,
+                                side=side
                             )
                         except Exception as te:
                             log.debug(f"Futures extension alert error: {te}")

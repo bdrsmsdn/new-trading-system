@@ -78,7 +78,8 @@ def check_open_positions(current_price: float, balance: Dict[str, float], specif
                     current_price=current_price,
                     entry_price=entry,
                     pnl_pct=pnl_pct,
-                    is_futures=False
+                    is_futures=False,
+                    side="LONG"
                 )
 
                 if evaluation.get("action") == "EXTEND_AND_RIDE":
@@ -102,7 +103,8 @@ def check_open_positions(current_price: float, balance: Dict[str, float], specif
                             trail_pct=pos["trailing_stop_pct"],
                             reason=evaluation.get("reason", ""),
                             sentiment_str=evaluation.get("sentiment_summary", ""),
-                            is_futures=False
+                            is_futures=False,
+                            side="LONG"
                         )
                     except Exception as te:
                         log.debug(f"Extension alert error: {te}")
