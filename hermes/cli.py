@@ -68,6 +68,31 @@ def main():
     one_shot_parser.add_argument("--dry-run", action="store_true", help="Simulate trading without real orders")
     sub.add_parser("budget", help="Show REST API budget status")
     sub.add_parser("agent", help="Start Telegram AI chatbot agent")
+
+    # Phase 2 Accounting & Rehearsal Operational Subcommands
+    p_acc_init = sub.add_parser("accounting-init", help="Initialize isolated SQLite accounting DB and run migrations")
+    p_acc_init.add_argument("--db-path", default=None, help="Database path override (defaults to ACCOUNTING_DB_PATH)")
+    p_acc_init.add_argument("--account-id", default="default", help="Account ID (default: 'default')")
+
+    p_acc_verify = sub.add_parser("accounting-verify", help="Verify accounting DB integrity, foreign keys, and migration checksums")
+    p_acc_verify.add_argument("--db-path", default=None, help="Database path override (defaults to ACCOUNTING_DB_PATH)")
+
+    p_acc_backup = sub.add_parser("accounting-backup", help="Create atomic online backup of accounting DB and state files")
+    p_acc_backup.add_argument("--db-path", default=None, help="Database path override (defaults to ACCOUNTING_DB_PATH)")
+    p_acc_backup.add_argument("--backup-dir", default=None, help="Directory to store backup files")
+
+    p_acc_restore = sub.add_parser("accounting-restore", help="Restore accounting DB from backup file with preflight integrity checks")
+    p_acc_restore.add_argument("--backup-file", required=True, help="Path to backup file to restore")
+    p_acc_restore.add_argument("--db-path", default=None, help="Target database path (defaults to ACCOUNTING_DB_PATH)")
+
+    p_acc_reconcile = sub.add_parser("accounting-reconcile", help="Execute dry-run reconciliation rehearsal on archived or live trade data")
+    p_acc_reconcile.add_argument("--db-path", default=None, help="Database path override (defaults to ACCOUNTING_DB_PATH)")
+    p_acc_reconcile.add_argument("--trades-file", default=None, help="JSON file containing archived Binance myTrades payloads")
+    p_acc_reconcile.add_argument("--dry-run", action="store_true", default=True, help="Dry-run mode: zero live orders or transfers (default: True)")
+
+    p_acc_status = sub.add_parser("accounting-status", help="Get summary of accounting cutover, verified PnL, surplus, and blockers")
+    p_acc_status.add_argument("--db-path", default=None, help="Database path override (defaults to ACCOUNTING_DB_PATH)")
+    p_acc_status.add_argument("--account-id", default="default", help="Account ID (default: 'default')")
     
     args = parser.parse_args()
     
@@ -267,6 +292,48 @@ def main():
         print("   Model: MiniMax-M2.7 (Anthropic-compatible)")
         print("   Press Ctrl+C to stop")
         start_bot()
+
+    elif args.command == "accounting-init":
+        from hermes.config import ACCOUNTING_DB_PATH
+        from hermes.accounting.ops import init_isolated_db
+        db = args.db_path or ACCOUNTING_DB_PATH
+        res = init_isolated_db(db, account_id=args.account_id)
+        to_json(res)
+
+    elif args.command == "accounting-verify":
+        from hermes.config import ACCOUNTING_DB_PATH
+        from hermes.accounting.ops import verify_db
+        db = args.db_path or ACCOUNTING_DB_PATH
+        res = verify_db(db)
+        to_json(res)
+
+    elif args.command == "accounting-backup":
+        from hermes.config import ACCOUNTING_DB_PATH
+        from hermes.accounting.ops import backup_accounting_state
+        db = args.db_path or ACCOUNTING_DB_PATH
+        res = backup_accounting_state(db, backup_dir=args.backup_dir)
+        to_json(res)
+
+    elif args.command == "accounting-restore":
+        from hermes.config import ACCOUNTING_DB_PATH
+        from hermes.accounting.ops import restore_accounting_state
+        db = args.db_path or ACCOUNTING_DB_PATH
+        res = restore_accounting_state(args.backup_file, target_db_path=db)
+        to_json(res)
+
+    elif args.command == "accounting-reconcile":
+        from hermes.config import ACCOUNTING_DB_PATH
+        from hermes.accounting.ops import rehearse_reconciliation
+        db = args.db_path or ACCOUNTING_DB_PATH
+        res = rehearse_reconciliation(db, trades_file=args.trades_file, dry_run=args.dry_run)
+        to_json(res)
+
+    elif args.command == "accounting-status":
+        from hermes.config import ACCOUNTING_DB_PATH
+        from hermes.accounting.ops import get_accounting_status
+        db = args.db_path or ACCOUNTING_DB_PATH
+        res = get_accounting_status(db, account_id=args.account_id)
+        to_json(res)
 
 if __name__ == "__main__":
     main()
