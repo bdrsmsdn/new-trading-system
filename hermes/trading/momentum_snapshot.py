@@ -389,10 +389,18 @@ def is_continuation_eligible(snapshot: MomentumSnapshot) -> Tuple[bool, str]:
     except (InvalidOperation, ValueError):
         return False, "INVALID_PRICE_FORMAT"
 
-    # 2. RSI quality (3m and 1h must be fresh with valid values)
+    # 2. RSI quality (3m is required primary timeframe; secondary series must not be stale/invalid)
+    rsi_3m_found = False
     for tf in snapshot.timeframe_series:
-        if tf.timeframe in ("3m", "1h"):
+        if tf.timeframe == "3m":
             if tf.provenance.status != "FRESH" or tf.values is None:
                 return False, f"{tf.provenance.status}_RSI_DATA"
+            rsi_3m_found = True
+        elif tf.timeframe in ("1h", "4h"):
+            if tf.provenance.status in ("STALE", "INVALID"):
+                return False, f"{tf.provenance.status}_RSI_DATA"
+
+    if not rsi_3m_found:
+        return False, "MISSING_RSI_DATA"
 
     return True, "OK"
