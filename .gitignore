@@ -4,6 +4,7 @@ __pycache__/
 *.log
 *.json
 !daemon_prices.json
+!fixtures/*.json
 !SPEC.md
 *.pid
 .nonce
