@@ -107,6 +107,28 @@ def execute_buy(pair: str, price: float, usdt_balance: float, dry_run: bool = Fa
     vol_factor = calculate_volatility(pair, price)
     log.info(f"BUY order (dynamic, vol_factor={vol_factor:.2f}): ${buy_amount_usdt:.2f} @ {format_price(price)}")
 
+    # Centralized Portfolio Risk Gate Check
+    from hermes.trading.portfolio_risk import check_entry_risk, calculate_portfolio_equity
+    from hermes.state import prices as _prices_for_equity
+    portfolio_equity = calculate_portfolio_equity({"usdt": usdt_balance}, _prices_for_equity)
+    if portfolio_equity < usdt_balance:
+        portfolio_equity = usdt_balance
+
+    risk_decision = check_entry_risk(
+        symbol=pair,
+        side="LONG",
+        proposed_usdt=buy_amount_usdt,
+        price=price,
+        current_equity=portfolio_equity,
+        free_usdt=usdt_balance,
+        open_positions=state.positions,
+        is_futures=False
+    )
+    if not risk_decision.allowed:
+        msg = f"Risk gate rejected BUY {pair}: {risk_decision.reason} ({risk_decision.reason_code})"
+        log.warning(f"🛡️ [RISK-GATE] {msg}")
+        return False, msg
+
     if dry_run:
         buy_amount_usdt = get_dynamic_position_size(pair, price, usdt_balance, confidence=confidence, score=score)
         log.info(f"[DRY_RUN] BUY: {pair} @ {format_price(price)}, qty_usdt=${buy_amount_usdt:.2f}, expected_coins={buy_amount_usdt/price:.2f}")

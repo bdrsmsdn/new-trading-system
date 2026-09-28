@@ -167,8 +167,12 @@ def execute_futures_order(
     symbol = sym if sym.endswith("USDT") else f"{sym}USDT"
     clean_pair = sym.replace("USDT", "")
 
-    # Set Leverage & Isolated Margin first
-    set_leverage_and_margin(symbol, leverage, DEFAULT_MARGIN_TYPE)
+    # Centralized Portfolio Risk Gate & Futures Enablement Check
+    from hermes.config import FUTURES_ENABLED
+    from hermes.trading.portfolio_risk import check_entry_risk
+    if not FUTURES_ENABLED:
+        log.warning(f"🛡️ [RISK-GATE] Futures entry rejected for {symbol}: FUTURES_ENABLED=False")
+        return False, {"error": "Futures trading is disabled by default (FUTURES_ENABLED=False)"}
 
     # Fetch current mark price to compute exact quantity
     price_res = futures_signed_request("/fapi/v1/premiumIndex", {"symbol": symbol}, method="GET")
@@ -178,6 +182,22 @@ def execute_futures_order(
         return False, {"error": "Invalid mark price"}
 
     notional_value = usdt_margin * leverage
+    risk_dec = check_entry_risk(
+        symbol=symbol,
+        side=side.upper(),
+        proposed_usdt=notional_value,
+        price=mark_price,
+        current_equity=max(usdt_margin * 10, notional_value),
+        free_usdt=usdt_margin,
+        is_futures=True,
+        force_allow_futures=FUTURES_ENABLED
+    )
+    if not risk_dec.allowed:
+        log.warning(f"🛡️ [RISK-GATE] Futures order rejected for {symbol}: {risk_dec.reason} ({risk_dec.reason_code})")
+        return False, {"error": f"Risk gate rejection: {risk_dec.reason}", "reason_code": risk_dec.reason_code}
+
+    # Set Leverage & Isolated Margin first
+    set_leverage_and_margin(symbol, leverage, DEFAULT_MARGIN_TYPE)
     raw_qty = notional_value / mark_price
 
     # Precision formatting from pair precision map or symbol rules

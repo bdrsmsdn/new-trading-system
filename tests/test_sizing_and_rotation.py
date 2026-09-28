@@ -1,5 +1,5 @@
 """
-Unit tests for Conviction Sizing, Dust Filtering, and Active Capital Rotation.
+Unit tests for Conviction Sizing, Dust Filtering, and Active Capital Rotation with test isolation.
 """
 
 import unittest
@@ -13,12 +13,14 @@ from hermes.trading.rotation import (
     get_position_momentum_score,
 )
 from hermes.state import state
+from tests.support.isolation import IsolatedTestCase
 
 
-class TestSizingAndRotation(unittest.TestCase):
+class TestSizingAndRotation(IsolatedTestCase):
 
     def setUp(self):
-        # Reset state positions
+        super().setUp()
+        # Set test state positions inside isolated test environment
         state.positions = {
             "BTC": {
                 "entry_price": 85000.0,
@@ -49,8 +51,9 @@ class TestSizingAndRotation(unittest.TestCase):
 
     def test_dynamic_sizing_rejects_dust(self):
         """Balances below MIN_TRADE_USDT should return 0.0 to prevent untradable dust."""
-        size_dust = get_dynamic_position_size("AVAX", 10.0, 2.0, confidence="High", score=9)
-        self.assertEqual(size_dust, 0.0)
+        with patch("hermes.api.balance.get_balance", return_value={"usdt": 2.0}):
+            size_dust = get_dynamic_position_size("AVAX", 10.0, 2.0, confidence="High", score=9)
+            self.assertEqual(size_dust, 0.0)
 
     @patch("hermes.trading.rotation.prices", {
         "BTC": {"price": 83000.0}, # -2.35% (stagnant)

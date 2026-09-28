@@ -8,8 +8,6 @@ from dataclasses import dataclass
 from hermes.logging_setup import log
 from hermes.api.rest import _check_budget, _consume_budget, _throttled_public_get
 
-# Orderbook cache
-_orderbook_cache: Dict[str, dict] = {}
 _ORDERBOOK_TTL = 60  # 60 seconds cache
 
 
@@ -23,9 +21,19 @@ class OrderbookData:
     imbalance: float  # bid_vol / ask_vol ratio
     spread: float
     spread_pct: float
-    thick_bid_level: float  # Price level with thick bids (support)
-    thick_ask_level: float  # Price level with thick asks (resistance)
+    thick_bid_level: Optional[float]  # Price level with thick bids (support)
+    thick_ask_level: Optional[float]  # Price level with thick asks (resistance)
     ts: float
+    bid_notional: float = 0.0  # Total quote notional of bids (USDT)
+    ask_notional: float = 0.0  # Total quote notional of asks (USDT)
+
+    def is_fresh(self, max_age: float = 60.0) -> bool:
+        """Check if orderbook data is within TTL."""
+        return (time.time() - self.ts) <= max_age
+
+
+# Orderbook cache
+_orderbook_cache: Dict[str, OrderbookData] = {}
 
 
 def _fetch_orderbook_raw(pair: str) -> Optional[str]:
@@ -112,6 +120,10 @@ def parse_orderbook(response: str, pair: str) -> Optional[OrderbookData]:
         # Calculate imbalance
         imbalance = bid_vol / ask_vol if ask_vol > 0 else 1.0
 
+        # Calculate quote notionals
+        bid_notional = sum(p * v for p, v in bids)
+        ask_notional = sum(p * v for p, v in asks)
+
         # Find thick levels
         thick_bid_level = _find_thick_level(bids, side="bid")
         thick_ask_level = _find_thick_level(asks, side="ask")
@@ -121,7 +133,9 @@ def parse_orderbook(response: str, pair: str) -> Optional[OrderbookData]:
             bid_volume=bid_vol, ask_volume=ask_vol,
             imbalance=imbalance, spread=spread, spread_pct=spread_pct,
             thick_bid_level=thick_bid_level, thick_ask_level=thick_ask_level,
-            ts=time.time()
+            ts=time.time(),
+            bid_notional=bid_notional,
+            ask_notional=ask_notional,
         )
     except Exception as e:
         log.debug(f"[ORDERBOOK] Parse error for {pair}: {e}")
@@ -160,12 +174,19 @@ def _find_thick_level(orders: list, side: str, top_n: int = 5) -> Optional[float
     return thickest_price
 
 
-def get_orderbook(pair: str, use_cache: bool = True) -> Optional[OrderbookData]:
+def get_orderbook(
+    pair: str,
+    use_cache: bool = True,
+    max_age: float = _ORDERBOOK_TTL,
+    allow_stale: bool = False
+) -> Optional[OrderbookData]:
     """Get orderbook data for a trading pair.
     
     Args:
         pair: Trading pair (e.g., 'doge', 'btc')
         use_cache: Whether to use cached data if fresh
+        max_age: Maximum age in seconds to consider cache fresh (default _ORDERBOOK_TTL = 60)
+        allow_stale: If True, return stale cache on fetch failure; if False, return None if stale.
     
     Returns:
         OrderbookData or None on error
@@ -175,14 +196,16 @@ def get_orderbook(pair: str, use_cache: bool = True) -> Optional[OrderbookData]:
     # Check cache
     if use_cache:
         cached = _orderbook_cache.get(pair)
-        if cached and (time.time() - cached.ts) < _ORDERBOOK_TTL:
+        if cached and (time.time() - cached.ts) <= max_age:
             return cached
     
     # Fetch fresh
     response = _fetch_orderbook_raw(pair)
     if response is None:
-        # Return stale cache if available
-        return _orderbook_cache.get(pair)
+        cached = _orderbook_cache.get(pair)
+        if cached and (allow_stale or (time.time() - cached.ts) <= max_age):
+            return cached
+        return None
     
     ob_data = parse_orderbook(response, pair)
     if ob_data:

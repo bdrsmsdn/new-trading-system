@@ -228,14 +228,10 @@ async def daemon_trade_check_v2(get_balance_func, min_confidence: str = "Medium"
             from hermes.trading.futures_monitor import check_open_futures_positions
             check_open_futures_positions()
 
-            # 3) Check if enough capital exists for new entry (Spot, Capital Rotation, or Futures)
+            # 3) Check if enough capital exists for new entry (Spot or Capital Rotation)
             can_rotate = bool(getattr(state, "positions", {}))
             if usdt < MIN_TRADE_USDT and not can_rotate:
-                from hermes.trading.futures import get_futures_account_overview
-                f_acc = get_futures_account_overview()
-                f_avail = f_acc.get("available_balance", 0.0) if f_acc.get("success") else 0.0
-                if f_avail < 5.0:
-                    continue
+                continue
 
             # Fast Evaluation on Volatility Spike
             spike_pairs = [p for p, ts in getattr(state, "spike_events", {}).items() if time.time() - ts < 20]
@@ -313,28 +309,22 @@ async def daemon_trade_check_v2(get_balance_func, min_confidence: str = "Medium"
                             if rotated:
                                 log.info(f"[V2-TRADE] 🔄 Capital rotation executed into {pair}: {rot_msg}")
                             else:
-                                # 3) Fallback: If rotation not applicable, execute LONG on Futures!
-                                from hermes.trading.futures import get_futures_account_overview, execute_futures_order
-                                f_acc = get_futures_account_overview()
-                                f_avail = f_acc.get("available_balance", 0.0) if f_acc.get("success") else 0.0
-                                if f_avail >= 5.0:
-                                    trade_margin = min(f_avail, 15.0) # max $15 margin per trade
-                                    log.info(f"[FUTURES-AUTO-LONG] {pair.upper()}: Executing LONG on Futures (${trade_margin:.2f} margin, 3x) at ${price}")
-                                    execute_futures_order(pair=pair, side="LONG", usdt_margin=trade_margin, leverage=3)
-                                else:
-                                    log.info(f"[V2-TRADE] {pair.upper()}: LONG signal ({confidence}) at ${price} (Spot USDT & Futures balance < $5, rotation: {rot_msg})")
+                                log.info(f"[V2-TRADE] {pair.upper()}: LONG signal ({confidence}) at ${price} (Spot USDT < ${MIN_TRADE_USDT:.2f}, rotation skipped: {rot_msg}). Auto Futures fallback disabled.")
                     
                     elif signal_type == "SHORT" and conf_level >= min_conf_level:
-                        # Auto-Short on Futures if available balance exists
-                        from hermes.trading.futures import get_futures_account_overview, execute_futures_order
-                        f_acc = get_futures_account_overview()
-                        f_avail = f_acc.get("available_balance", 0.0) if f_acc.get("success") else 0.0
-                        if f_avail >= 5.0:
-                            trade_margin = min(f_avail, 15.0) # max $15 margin per short
-                            log.info(f"[FUTURES-AUTO-SHORT] {pair.upper()}: Executing SHORT on Futures (${trade_margin:.2f} margin, 3x) at ${price}")
-                            execute_futures_order(pair=pair, side="SHORT", usdt_margin=trade_margin, leverage=3)
+                        from hermes.config import FUTURES_ENABLED
+                        if not FUTURES_ENABLED:
+                            log.info(f"[V2-TRADE] {pair.upper()}: SHORT signal ({confidence}) at ${price} skipped (Futures trading is disabled by default).")
                         else:
-                            log.info(f"[V2-TRADE] {pair.upper()}: SHORT signal ({confidence}) at ${price} (Futures balance < $5, skipped)")
+                            from hermes.trading.futures import get_futures_account_overview, execute_futures_order
+                            f_acc = get_futures_account_overview()
+                            f_avail = f_acc.get("available_balance", 0.0) if f_acc.get("success") else 0.0
+                            if f_avail >= 5.0:
+                                trade_margin = min(f_avail, 15.0) # max $15 margin per short
+                                log.info(f"[FUTURES-AUTO-SHORT] {pair.upper()}: Executing SHORT on Futures (${trade_margin:.2f} margin, 3x) at ${price}")
+                                execute_futures_order(pair=pair, side="SHORT", usdt_margin=trade_margin, leverage=3)
+                            else:
+                                log.info(f"[V2-TRADE] {pair.upper()}: SHORT signal ({confidence}) at ${price} (Futures balance < $5, skipped)")
             
             state.save()
         except Exception as e:

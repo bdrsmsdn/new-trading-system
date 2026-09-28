@@ -74,7 +74,7 @@ def sweep_profit_to_funding(profit_usdt: float, min_threshold: float = 0.05, pai
             f"📦 Dari Pair: *{pair.upper() if pair else 'SPOT'}*\n"
             f"🏦 Tujuan: *Funding Wallet (Dompet Pendanaan)*\n"
             f"────────────────────\n"
-            f"ℹ️ Modal pokok tetap aman di Spot untuk compound/trade berikutnya. Profit bersih telah diamankan ke Funding Wallet siap untuk ditarik / cadangan server! 🛡️🚀"
+            f"ℹ️ Modal trading aktif tetap berada di Spot untuk siklus trade berikutnya. Profit ditransfer ke Funding Wallet sesuai aturan alokasi (bukan garansi modal anti-rugi). 🛡️🚀"
         )
         telegram_send(msg)
         return True

@@ -59,8 +59,10 @@ def telegram_trade_alert(pair: str, side: str, qty: float, price: float, total: 
                 f"Margin: *${total:.2f} USDT* (3x Leverage)\n"
                 f"────────────────────\n"
                 f"🎯 Target TP: *+5.0% ROE*\n"
-                f"🛡️ Trailing Stop: *Aktif di +3.0% ROE* (pullback 1.5%)\n"
-                f"🛑 Target SL: *-2.5% ROE*"
+                f"🛡️ Trailing Stop: *Trigger di +3.0% ROE* (pullback 1.5%)\n"
+                f"🛑 Target SL: *-2.5% ROE*\n"
+                f"────────────────────\n"
+                f"ℹ️ Target ROE adalah return on margin kotor; belum termasuk komisi trading dan funding fees berkala."
             )
         else:
             tp_target = price * (1 + TAKE_PROFIT_PCT)
@@ -74,8 +76,10 @@ def telegram_trade_alert(pair: str, side: str, qty: float, price: float, total: 
                 f"Total Modal: *${total:.2f} USDT*\n"
                 f"────────────────────\n"
                 f"🎯 Target TP (+{TAKE_PROFIT_PCT*100:.1f}%): *{format_price(tp_target)}*\n"
-                f"🛡️ Trailing Stop: *Aktif di {format_price(trail_act)}* (+{TRAILING_ACTIVATION_PCT*100:.1f}%)\n"
-                f"🛑 Target SL (-{STOP_LOSS_PCT*100:.1f}%): *{format_price(sl_target)}*"
+                f"🛡️ Trailing Stop: *Trigger aktif di {format_price(trail_act)}* (+{TRAILING_ACTIVATION_PCT*100:.1f}%)\n"
+                f"🛑 Target SL (-{STOP_LOSS_PCT*100:.1f}%): *{format_price(sl_target)}*\n"
+                f"────────────────────\n"
+                f"ℹ️ Target persentase adalah Gross Price PnL; net realized PnL akan memperhitungkan fee trading exchange."
             )
     else:
         # Fallback if telegram_trade_alert is invoked for SELL
@@ -88,9 +92,9 @@ def telegram_trade_alert(pair: str, side: str, qty: float, price: float, total: 
 
         emoji = "🎯" if is_profit else "🛑"
         tag = "TAKE PROFIT (PROFIT)" if is_profit else "STOP LOSS (CUT LOSS)"
-        outcome_lbl = "Untung Bersih" if is_profit else "Rugi / Cut Loss"
+        outcome_lbl = "Gross Price PnL (Sebelum Fee)" if is_profit else "Gross Loss (Sebelum Fee)"
         outcome_val = f"+${pnl_usdt:,.2f} USDT (+{pnl_pct:.2f}%)" if is_profit else f"-${abs(pnl_usdt):,.2f} USDT ({pnl_pct:.2f}%)"
-        note = "Profit diamankan ke saldo USDT! 🚀" if is_profit else "Proteksi modal aktif: cut loss disiplin. 🛡️"
+        note = "Order jual terkirim. Net Realized PnL resmi dicatat setelah rekonsiliasi fee exchange. 🚀" if is_profit else "Proteksi modal aktif: cut loss disiplin untuk membatasi risiko. 🛡️"
 
         msg = (
             f"{emoji} *HERMES {tag} — {clean_pair}*\n"
@@ -124,7 +128,19 @@ def telegram_ts_alert(pair: str, pnl_pct: float) -> None:
     )
     telegram_send(msg)
 
-def telegram_exit_alert(pair: str, side: str, entry: float, exit_price: float, qty: float, pnl_pct: float, hold_hours: float, reason: str, peak_price: float = 0.0) -> None:
+def telegram_exit_alert(
+    pair: str,
+    side: str,
+    entry: float,
+    exit_price: float,
+    qty: float,
+    pnl_pct: float,
+    hold_hours: float,
+    reason: str,
+    peak_price: float = 0.0,
+    net_pnl_usdt: float = None,
+    commission_usdt: float = None,
+) -> None:
     """Send detailed exit alert when spot position is closed (TP/SL/Trailing/Signal)."""
     if not _telegram_enabled:
         return
@@ -151,38 +167,38 @@ def telegram_exit_alert(pair: str, side: str, entry: float, exit_price: float, q
     if is_dynamic:
         emoji = "🚀"
         title = f"🚀 *DYNAMIC TAKE PROFIT (PEAK CAPTURE) — {clean_pair}*"
-        outcome_label = "Untung Bersih Maksimal"
+        outcome_label = "Gross Price PnL"
         outcome_val = f"+${pnl_usdt:,.2f} USDT (+{pnl_pct:.2f}%)"
-        note = "Sukses menunggangi tren pump & amankan profit di dekat pucuk! 🚀🎯"
+        note = "Exit trailing aktif di dekat puncak tren (Gross Price PnL sebelum fee/slippage). 🚀🎯"
     elif is_tp:
         emoji = "🎯"
         title = f"🎯 *TAKE PROFIT (TP) HIT — {clean_pair}*"
-        outcome_label = "Untung Bersih"
+        outcome_label = "Gross Price PnL"
         outcome_val = f"+${pnl_usdt:,.2f} USDT (+{pnl_pct:.2f}%)"
-        note = "Target profit tercapai & profit diamankan ke saldo USDT! 🚀"
+        note = "Target profit tercapai (Gross Price PnL sebelum fee transaksi exchange). 🚀"
     elif is_trailing:
         emoji = "🛡️"
         title = f"🛡️ *TRAILING STOP EXIT — {clean_pair}*"
-        outcome_label = "Hasil PnL"
+        outcome_label = "Gross Price PnL"
         outcome_val = f"{'+' if pnl_usdt >= 0 else ''}${pnl_usdt:,.2f} USDT ({pnl_pct:+.2f}%)"
-        note = "Trailing stop mengunci profit saat ada indikasi koreksi harga! 🎯"
+        note = "Trailing stop trigger aktif saat terjadi retracement dari harga tertinggi. 🛡️"
     elif is_sl:
         emoji = "🛑"
         title = f"🛑 *STOP LOSS (CUT LOSS) — {clean_pair}*"
-        outcome_label = "Rugi / Cut Loss"
+        outcome_label = "Gross Loss (Sebelum Fee)"
         outcome_val = f"-${abs(pnl_usdt):,.2f} USDT ({pnl_pct:.2f}%)"
         note = "Proteksi modal aktif: cut loss disiplin untuk membatasi risiko. 🛡️"
     else:
         if is_profit:
             emoji = "🎯"
             title = f"🎯 *SELL EXECUTED (PROFIT) — {clean_pair}*"
-            outcome_label = "Untung Bersih"
+            outcome_label = "Gross Price PnL"
             outcome_val = f"+${pnl_usdt:,.2f} USDT (+{pnl_pct:.2f}%)"
-            note = "Posisi ditutup profit sesuai sinyal strategi. 🚀"
+            note = "Posisi ditutup sesuai sinyal strategi (Gross Price PnL sebelum fee). 🚀"
         else:
             emoji = "🛑"
             title = f"🛑 *SELL EXECUTED (CUT LOSS) — {clean_pair}*"
-            outcome_label = "Rugi / Cut Loss"
+            outcome_label = "Gross Loss (Sebelum Fee)"
             outcome_val = f"-${abs(pnl_usdt):,.2f} USDT ({pnl_pct:.2f}%)"
             note = "Sinyal strategi merekomendasikan exit untuk pengamanan modal. 🛡️"
 
@@ -197,12 +213,18 @@ def telegram_exit_alert(pair: str, side: str, entry: float, exit_price: float, q
     if peak_price and peak_price > entry:
         lines.append(f"🔝 Harga Tertinggi (Peak): *{format_price(peak_price)}*")
 
+    if net_pnl_usdt is not None:
+        lines.append(f"💰 Net Realized PnL: *{'+' if net_pnl_usdt >= 0 else ''}${net_pnl_usdt:,.2f} USDT*")
+    if commission_usdt is not None:
+        lines.append(f"💸 Komisi Exchange: *${commission_usdt:,.4f} USDT*")
+
     lines.extend([
         f"📦 Kuantitas: {format_qty(qty)} {coin}",
         f"💰 Total Nilai Cair: *${total_usdt:.2f} USDT*",
         f"⏱️ Durasi Hold: {duration_str}",
         f"────────────────────",
-        f"ℹ️ {note}"
+        f"ℹ️ {note}",
+        f"⚠️ *Kualifikasi PnL:* Nilai di atas adalah Gross Price PnL (harga kotor). Net Realized PnL aktual memperhitungkan potongan komisi transaksi exchange.",
     ])
 
     telegram_send("\n".join(lines))
@@ -219,7 +241,9 @@ def telegram_futures_exit_alert(
     leverage: int,
     reason: str,
     exit_type: str = "TP",
-    peak_roe: float = 0.0
+    peak_roe: float = 0.0,
+    net_pnl_usd: float = None,
+    funding_fee_usd: float = None,
 ) -> None:
     """Send rich exit alert for Binance Futures positions (TP, Trail, SL)."""
     if not _telegram_enabled:
@@ -232,29 +256,29 @@ def telegram_futures_exit_alert(
     if is_dynamic:
         emoji = "🚀"
         title = f"🚀 *FUTURES DYNAMIC TP (PEAK CAPTURE) — {clean_pair}-PERP*"
-        outcome_label = "Untung Bersih (ROE)"
-        outcome_val = f"+${pnl_usd:,.2f} USDT (+{roe_pct*100:.2f}%)"
-        peak_str = f" (Peak: +{peak_roe*100:.2f}%)" if peak_roe > 0 else ""
-        note = f"Sukses menunggangi tren pump futures & amankan profit maksimal! 🚀🎯{peak_str}"
+        outcome_label = "Futures ROE (Gross Return on Margin)"
+        outcome_val = f"+${pnl_usd:,.2f} USDT (+{roe_pct*100:.2f}% ROE)"
+        peak_str = f" (Peak ROE: +{peak_roe*100:.2f}%)" if peak_roe > 0 else ""
+        note = f"Exit dinamis trailing aktif setelah tren pergerakan futures! 🚀🎯{peak_str}"
     elif exit_type == "TP":
         emoji = "🎯"
         title = f"🎯 *FUTURES TAKE PROFIT (TP) — {clean_pair}-PERP*"
-        outcome_label = "Untung Bersih (ROE)"
-        outcome_val = f"+${pnl_usd:,.2f} USDT (+{roe_pct*100:.2f}%)"
-        note = "Target profit tercapai & posisi futures sukses ditutup! 🚀"
+        outcome_label = "Futures ROE (Gross Return on Margin)"
+        outcome_val = f"+${pnl_usd:,.2f} USDT (+{roe_pct*100:.2f}% ROE)"
+        note = "Target ROE tercapai & posisi futures ditutup. 🚀"
     elif exit_type == "TRAIL":
         emoji = "🛡️"
         title = f"🛡️ *FUTURES TRAILING STOP — {clean_pair}-PERP*"
-        outcome_label = "Hasil PnL (ROE)"
-        outcome_val = f"{'+' if pnl_usd >= 0 else ''}${pnl_usd:,.2f} USDT ({roe_pct*100:+.2f}%)"
-        peak_str = f" (Peak: +{peak_roe*100:.2f}%)" if peak_roe > 0 else ""
-        note = f"Trailing stop sukses mengunci keuntungan dari pembalikan arah harga! 🎯{peak_str}"
+        outcome_label = "Futures ROE (Gross Return on Margin)"
+        outcome_val = f"{'+' if pnl_usd >= 0 else ''}${pnl_usd:,.2f} USDT ({roe_pct*100:+.2f}% ROE)"
+        peak_str = f" (Peak ROE: +{peak_roe*100:.2f}%)" if peak_roe > 0 else ""
+        note = f"Trailing stop trigger aktif saat terjadi pullback ROE dari peak. 🎯{peak_str}"
     else:  # SL
         emoji = "🛑"
         title = f"🛑 *FUTURES STOP LOSS (CUT LOSS) — {clean_pair}-PERP*"
-        outcome_label = "Rugi / Cut Loss (ROE)"
-        outcome_val = f"-${abs(pnl_usd):,.2f} USDT ({roe_pct*100:.2f}%)"
-        note = "Stop loss disiplin dieksekusi untuk mencegah risiko likuidasi. 🛡️"
+        outcome_label = "Futures ROE Loss (Gross)"
+        outcome_val = f"-${abs(pnl_usd):,.2f} USDT ({roe_pct*100:.2f}% ROE)"
+        note = "Stop loss disiplin dieksekusi untuk mencegah risiko likuidasi lebih lanjut. 🛡️"
 
     lines = [
         title,
@@ -268,11 +292,17 @@ def telegram_futures_exit_alert(
     if exit_type == "TRAIL" and peak_roe > 0:
         lines.append(f"🔝 Peak ROE: *+{peak_roe*100:.2f}%*")
 
+    if net_pnl_usd is not None:
+        lines.append(f"💰 Net Realized PnL: *{'+' if net_pnl_usd >= 0 else ''}${net_pnl_usd:,.2f} USDT*")
+    if funding_fee_usd is not None:
+        lines.append(f"💸 Akumulasi Funding Fee: *${funding_fee_usd:,.4f} USDT*")
+
     lines.extend([
         f"📦 Ukuran Posisi: {format_qty(amount)} {clean_pair}",
         f"💰 Margin Terpakai: *${initial_margin:.2f} USDT* (Notional: ${notional:.2f})",
         f"────────────────────",
-        f"ℹ️ {note}"
+        f"ℹ️ {note}",
+        f"⚠️ *Kualifikasi PnL:* Nilai di atas adalah Futures ROE % (Gross Return on Margin), BUKAN Net Realized PnL. Komisi transaksi dan akumulasi funding rate dipotong terpisah oleh exchange.",
     ])
 
     telegram_send("\n".join(lines))
@@ -365,7 +395,7 @@ def telegram_rotation_alert(
         "🔄 *HERMES ACTIVE CAPITAL ROTATION (Opportunity Cost)*",
         "────────────────────",
         f"✂️ *PANGKAS POSISI LELET: {clean_old}*",
-        f"📉 PnL Saat Cut: {pnl_emoji} {pnl_sign}{liquidated_pnl * 100:.2f}%",
+        f"📉 PnL Saat Cut: {pnl_emoji} {pnl_sign}{liquidated_pnl * 100:.2f}% (Gross Price)",
         f"📊 Skor Momentum Lama: {liquidated_score}/10 (Stagnan)",
         f"💵 Modal Dilepas: ${freed_usdt:.2f} USDT",
         "────────────────────",
@@ -374,6 +404,6 @@ def telegram_rotation_alert(
         f"💵 Entry Baru: ${new_price:.4f}",
         f"🎯 Target Breakout: +10.0%",
         "────────────────────",
-        "💡 *Rasional AI:* Modal dipindahkan dari aset tidur/lelet demi menangkap early breakout dengan potensi gain dan velocity cuan yang jauh lebih tinggi! 🚀"
+        "💡 *Rasional Rotasi:* Modal dialokasikan ulang dari aset berkinerja lambat ke kandidat dengan skor momentum superior berdasarkan evaluasi strategi deterministik (bukan jaminan keuntungan)."
     ]
     telegram_send("\n".join(lines))
