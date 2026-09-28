@@ -264,15 +264,21 @@ def execute_sell(pair: str, price: float, qty: float, reason: str = "", order_ty
                 peak_price=peak_price
             )
 
-            # Auto-sweep realized profit to Funding Wallet (Survival & Isolation)
-            from hermes.config import AUTO_SWEEP_PROFIT_TO_FUNDING, PROFIT_SWEEP_MIN_USDT
+            # Profit handling: daily collection model (accumulates in Spot,
+            # collector sweeps once daily target is reached) with legacy
+            # per-trade sweep kept as optional fallback.
+            from hermes.config import AUTO_SWEEP_PROFIT_TO_FUNDING, PROFIT_SWEEP_MIN_USDT, DAILY_PROFIT_COLLECTION
             pnl_usdt = (price - entry) * qty
-            if AUTO_SWEEP_PROFIT_TO_FUNDING and pnl_usdt >= PROFIT_SWEEP_MIN_USDT:
-                try:
+            try:
+                if DAILY_PROFIT_COLLECTION:
+                    from hermes.api.transfer import track_realized_profit, run_daily_profit_collector
+                    track_realized_profit(pair=pair, pnl_usdt=pnl_usdt)
+                    run_daily_profit_collector()
+                elif AUTO_SWEEP_PROFIT_TO_FUNDING and pnl_usdt >= PROFIT_SWEEP_MIN_USDT:
                     from hermes.api.transfer import sweep_profit_to_funding
                     sweep_profit_to_funding(profit_usdt=pnl_usdt, min_threshold=PROFIT_SWEEP_MIN_USDT, pair=pair)
-                except Exception as swe:
-                    log.error(f"[PROFIT-SWEEP] Sweep error: {swe}")
+            except Exception as swe:
+                log.error(f"[PROFIT-HANDLING] Error: {swe}")
 
             del state.positions[pair]
         state.last_trade_time[pair] = time.time()

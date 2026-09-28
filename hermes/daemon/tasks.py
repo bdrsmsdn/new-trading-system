@@ -461,6 +461,12 @@ async def daemon_periodic_sync():
             loop = asyncio.get_running_loop()
             reconciled = await loop.run_in_executor(None, reconcile_positions_from_binance, 5.0, True)
             log.info(f"[PERIODIC-SYNC] Background sync complete. Active positions: {len(reconciled)}")
+            # Daily profit collection check (sweeps target amount once reached)
+            try:
+                from hermes.api.transfer import run_daily_profit_collector
+                loop.run_in_executor(None, run_daily_profit_collector)
+            except Exception as dpe:
+                log.error(f"[PERIODIC-SYNC] Daily profit collector error: {dpe}")
         except asyncio.CancelledError:
             break
         except Exception as e:

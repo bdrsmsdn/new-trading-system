@@ -105,8 +105,13 @@ USE_STRATEGY_V2 = True
 SPIKE_TRIGGER_PCT = 0.012  # 1.2% instant spike triggers immediate V2 evaluation
 
 # Profit Auto-Sweep to Funding Wallet (Survival & P2P IDR Fund)
-AUTO_SWEEP_PROFIT_TO_FUNDING = True
+# DAILY COLLECTION MODEL: profits accumulate in Spot first; once the daily
+# target (DAILY_PROFIT_TARGET_USDT) is reached, only that amount is swept
+# to Funding. Remainder compounds in Spot as trading capital.
+AUTO_SWEEP_PROFIT_TO_FUNDING = False
 PROFIT_SWEEP_MIN_USDT = 0.05
+DAILY_PROFIT_COLLECTION = True
+DAILY_PROFIT_TARGET_USDT = 1.0
 
 # DCA (Dollar Cost Averaging) settings
 DCA_CHECK_INTERVAL = 300          # Check every 5 minutes
