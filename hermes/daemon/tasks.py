@@ -287,16 +287,32 @@ async def daemon_trade_check_v2(get_balance_func, min_confidence: str = "Medium"
                         live_balance = get_balance_func(use_cache=False)
                         usdt = live_balance.get("usdt", 0)
                         score = signal_data.get("score", 8 if confidence == "High" else 6)
+                        # Shadow is also relevant when cash exists but the normal Spot
+                        # entry is not deployable because a portfolio risk gate rejected it.
+                        shadow_trigger = usdt < MIN_TRADE_USDT
                         if usdt >= MIN_TRADE_USDT:
                             log.info(f"[V2-TRADE] {pair.upper()}: LONG signal ({confidence}) at ${price} on SPOT")
                             log.info(f"         RSI: {signal_data.get('rsi_value', 0):.1f} | DailyPos: {signal_data.get('daily_position', 0):.1f}%")
                             log.info(f"         SL: ${signal_data.get('stop_loss', 0):.4f} | TP1: ${signal_data.get('take_profit_1', 0):.4f} | TP2: ${signal_data.get('take_profit_2', 0):.4f}")
-                            if usdt >= MIN_TRADE_USDT:
-                                buy_ok, buy_msg = execute_buy(pair, price, usdt, confidence=confidence, score=score)
-                                if buy_ok:
-                                    usdt = max(0.0, usdt - MIN_TRADE_USDT)
-                        else:
-                            # 2) If Spot USDT insufficient, evaluate cost-aware rotation in SHADOW mode (zero order mutations)
+                            buy_ok, buy_msg = execute_buy(pair, price, usdt, confidence=confidence, score=score)
+                            if buy_ok:
+                                usdt = max(0.0, usdt - MIN_TRADE_USDT)
+                            else:
+                                # Only risk-policy denials should feed rotation shadow.
+                                # API/network/format failures are not rotation evidence.
+                                shadow_trigger = any(code in str(buy_msg) for code in (
+                                    "INSUFFICIENT_RESERVE",
+                                    "RISK_BUDGET_EXCEEDED",
+                                    "CIRCUIT_BREAKER_ACTIVE",
+                                    "MIN_NOTIONAL_EXCEEDS_BUDGET",
+                                ))
+                                if shadow_trigger:
+                                    log.info(
+                                        f"[ROTATION-SHADOW] Spot entry unavailable for {pair.upper()} "
+                                        f"with ${usdt:.2f} free USDT; evaluating replacement candidates: {buy_msg}"
+                                    )
+                        if shadow_trigger:
+                            # Evaluate cost-aware rotation in SHADOW mode (zero order mutations)
                             from hermes.accounting.schema import init_db
                             from hermes.accounting.repository import SqliteRotationRepository
                             from hermes.accounting.rotation import (
