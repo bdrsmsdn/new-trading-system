@@ -94,10 +94,19 @@ def get_dynamic_position_size(
     combined_factor = vol_factor * 0.7 + max(0.3, min(1.0, atr_term)) * 0.3
     dynamic_size = base_size * combined_factor
 
-    # 5. Clamp to affordable balance and enforce Binance minNotional
-    max_affordable = usdt_balance * (1 - FEE_BUFFER)
+    # 5. Clamp to affordable balance and preserve mandatory cash reserve (25% default)
+    # Allows dynamic down-sizing so valid momentum entries aren't rejected outright
+    min_reserve_pct = 0.25
+    required_reserve = equity * min_reserve_pct
+    max_spendable_with_reserve = max(0.0, (usdt_balance - required_reserve) * (1 - FEE_BUFFER))
+    max_affordable = min(usdt_balance * (1 - FEE_BUFFER), max_spendable_with_reserve)
+
     if max_affordable < MIN_TRADE_USDT:
-        log.debug(f"[SIZING] {pair}: max_affordable ${max_affordable:.2f} < MIN_TRADE_USDT ${MIN_TRADE_USDT:.2f}. No dust trade.")
+        log.debug(
+            f"[SIZING] {pair}: max_affordable ${max_affordable:.2f} "
+            f"(USDT: ${usdt_balance:.2f}, Reserve: ${required_reserve:.2f}) < MIN_TRADE_USDT ${MIN_TRADE_USDT:.2f}. "
+            f"No trade without violating cash reserve."
+        )
         return 0.0
 
     final_size = min(dynamic_size, max_affordable)

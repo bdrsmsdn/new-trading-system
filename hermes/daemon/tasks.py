@@ -283,13 +283,14 @@ async def daemon_trade_check_v2(get_balance_func, min_confidence: str = "Medium"
                             log.debug(f"[V2-TRADE] News sentiment check skipped: {ne}")
 
                         # 1) Try Spot Buy first if Spot USDT >= MIN_TRADE_USDT
+                        # Always use live balance here to avoid stale cache causing shadow block to be skipped
+                        live_balance = get_balance_func(use_cache=False)
+                        usdt = live_balance.get("usdt", 0)
+                        score = signal_data.get("score", 8 if confidence == "High" else 6)
                         if usdt >= MIN_TRADE_USDT:
                             log.info(f"[V2-TRADE] {pair.upper()}: LONG signal ({confidence}) at ${price} on SPOT")
                             log.info(f"         RSI: {signal_data.get('rsi_value', 0):.1f} | DailyPos: {signal_data.get('daily_position', 0):.1f}%")
                             log.info(f"         SL: ${signal_data.get('stop_loss', 0):.4f} | TP1: ${signal_data.get('take_profit_1', 0):.4f} | TP2: ${signal_data.get('take_profit_2', 0):.4f}")
-                            live_balance = get_balance_func(use_cache=False)
-                            usdt = live_balance.get("usdt", 0)
-                            score = signal_data.get("score", 8 if confidence == "High" else 6)
                             if usdt >= MIN_TRADE_USDT:
                                 buy_ok, buy_msg = execute_buy(pair, price, usdt, confidence=confidence, score=score)
                                 if buy_ok:
