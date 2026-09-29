@@ -110,9 +110,33 @@ def execute_buy(pair: str, price: float, usdt_balance: float, dry_run: bool = Fa
     # Centralized Portfolio Risk Gate Check
     from hermes.trading.portfolio_risk import check_entry_risk, calculate_portfolio_equity
     from hermes.state import prices as _prices_for_equity
-    portfolio_equity = calculate_portfolio_equity({"usdt": usdt_balance}, _prices_for_equity)
+
+    # Risk budget is based on total Spot equity, not free USDT alone.
+    # Include every tracked open position at its latest WS/REST price so a
+    # cash-constrained portfolio is not treated as if its holdings were zero.
+    equity_balances = {"usdt": float(usdt_balance)}
+    for held_pair, position in state.positions.items():
+        if not isinstance(position, dict):
+            continue
+        qty = float(position.get("qty", 0.0) or 0.0)
+        if qty <= 0:
+            continue
+        symbol = str(held_pair).upper().removesuffix("USDT")
+        price_info = _prices_for_equity.get(held_pair, _prices_for_equity.get(symbol, {}))
+        if isinstance(price_info, dict):
+            held_price = float(price_info.get("price", 0.0) or 0.0)
+        else:
+            held_price = float(price_info or 0.0)
+        if held_price > 0:
+            equity_balances[symbol] = qty
+
+    portfolio_equity = calculate_portfolio_equity(equity_balances, _prices_for_equity)
     if portfolio_equity < usdt_balance:
         portfolio_equity = usdt_balance
+    log.debug(
+        f"[RISK-EQUITY] {pair}: total Spot equity ${portfolio_equity:.2f} "
+        f"(free USDT ${usdt_balance:.2f}, tracked assets {len(equity_balances) - 1})"
+    )
 
     risk_decision = check_entry_risk(
         symbol=pair,

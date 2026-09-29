@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 from hermes.config import STOP_LOSS_PCT
-from hermes.state import state
+from hermes.state import state, prices
 from hermes.trading.portfolio_risk import (
     trip_circuit_breaker,
     reset_circuit_breaker,
@@ -46,6 +46,25 @@ class TestEntryGateCoverage(unittest.TestCase):
             
             # Tasks logic check: with usdt < 5.50 and no rotation, futures order should never be called
             mock_futures_order.assert_not_called()
+
+    def test_spot_entry_risk_budget_uses_total_equity_not_free_usdt(self):
+        """Tracked Spot positions must count toward the entry risk-budget equity base."""
+        state.positions["BTC"] = {
+            "entry_price": 80000.0,
+            "qty": 0.001,
+            "time": 1000.0,
+        }
+        prices["BTC"] = {"price": 80000.0}
+
+        with patch("hermes.trading.execution.get_dynamic_position_size", return_value=12.0), \
+             patch("hermes.trading.execution.calculate_volatility", return_value=1.0), \
+             patch("hermes.trading.portfolio_risk.check_entry_risk") as mock_gate:
+            mock_gate.return_value = MagicMock(allowed=False, reason="test", reason_code="TEST")
+            success, _ = execute_buy("SOL", 100.0, 55.0)
+
+        self.assertFalse(success)
+        self.assertAlmostEqual(mock_gate.call_args.kwargs["current_equity"], 135.0)
+        self.assertEqual(mock_gate.call_args.kwargs["free_usdt"], 55.0)
 
     def test_circuit_breaker_halts_all_new_entries(self):
         """When circuit breaker is active, all entry avenues (Spot, DCA, Futures) are blocked."""
