@@ -74,7 +74,7 @@ FUTURES_ENABLED = parse_bool_env("FUTURES_ENABLED", False)
 
 # Centralized Portfolio Risk Gates
 RISK_BUDGET_PER_TRADE_PCT = float(os.getenv("RISK_BUDGET_PER_TRADE_PCT", "0.01"))      # 1.0% max equity risk per trade (~$1.70 on $170 equity)
-MAX_AGGREGATE_STOP_RISK_PCT = 0.03     # 3.0% max aggregate planned stop risk
+MAX_AGGREGATE_STOP_RISK_PCT = 0.04     # 4.0% max aggregate planned stop risk
 DAILY_LOSS_CIRCUIT_BREAKER_PCT = 0.02  # 2.0% mark-to-market daily loss circuit breaker
 MIN_EQUITY_USDT_RESERVE_PCT = 0.25     # 25.0% minimum tradable USDT cash reserve
 
